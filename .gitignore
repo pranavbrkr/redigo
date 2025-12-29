@@ -1,0 +1,16 @@
+# Binaries
+bin/
+*.exe
+*.out
+
+# Go build/test cache (optional to ignore, but common)
+*.test
+
+# Editor/OS
+.vscode/
+.idea/
+.DS_Store
+
+# Logs / runtime files
+*.log
+data/
