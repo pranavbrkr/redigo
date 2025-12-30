@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -47,28 +48,46 @@ func handleConn(conn net.Conn) {
 	for {
 		v, err := resp.Decode(reader)
 		if err != nil {
-			if err == io.EOF {
-				log.Printf("clieent disconnected: %s", conn.RemoteAddr())
+			if errors.Is(err, io.EOF) || isConnReset(err) {
+				log.Printf("client disconnected: %s", conn.RemoteAddr())
 				return
 			}
+
 			log.Printf("decode error from %s: %v", conn.RemoteAddr(), err)
-			_, _ = writer.WriteString("-ERR protocol error\r\n")
-			_ = writer.Flush()
+			if _, werr := writer.WriteString("-ERR protocol error\r\n"); werr != nil {
+				log.Printf("write error to %s: %v", conn.RemoteAddr(), werr)
+				return
+			}
+			if ferr := writer.Flush(); ferr != nil {
+				log.Printf("flush error to %s: %v", conn.RemoteAddr(), ferr)
+			}
 			return
 		}
 
 		cmd, ok := decodeCommand(v)
 		if !ok {
-			_, _ = writer.WriteString("-ERR expected array of bulk strings\r\n")
-			_ = writer.Flush()
+			if _, werr := writer.WriteString("-ERR expected arry of bulk strings\r\n"); werr != nil {
+				log.Printf("write error to %s: %v", conn.RemoteAddr(), werr)
+				return
+			}
+			if ferr := writer.Flush(); ferr != nil {
+				log.Printf("flush error to %s: %v", conn.RemoteAddr(), ferr)
+				return
+			}
 			continue
 		}
 
 		switch cmd {
 		case "PING":
-			_, _ = writer.WriteString("+PONG\r\n")
+			if _, werr := writer.WriteString("+PONG\r\n"); werr != nil {
+				log.Printf("write error to %s: %v", conn.RemoteAddr(), werr)
+				return
+			}
 		default:
-			_, _ = writer.WriteString("-ERR unknown command\r\n")
+			if _, werr := writer.WriteString("-ERR unknown command\r\n"); werr != nil {
+				log.Printf("write error to %s: %v", conn.RemoteAddr(), werr)
+				return
+			}
 		}
 
 		if err := writer.Flush(); err != nil {
@@ -91,4 +110,13 @@ func decodeCommand(v resp.Value) (string, bool) {
 
 	cmd := strings.ToUpper(string(first.Bulk))
 	return cmd, true
+}
+
+// Windows aptch
+// Treat as normal disconnect for now
+func isConnReset(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "wsarecv") ||
+		strings.Contains(msg, "forcibly closed") ||
+		strings.Contains(msg, "connection reset")
 }
