@@ -2,12 +2,14 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"strings"
+
+	"github.com/pranavbrkr/redigo/internal/protocol/resp"
 )
 
 func main() {
@@ -38,39 +40,55 @@ func main() {
 
 func handleConn(conn net.Conn) {
 	defer conn.Close()
-	log.Printf("client handler started for %s", conn.RemoteAddr())
 
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
 
-	buf := make([]byte, 4096)
-
 	for {
-		n, err := reader.Read(buf)
-		if n > 0 {
-			payload := buf[:n]
-			log.Printf("received %d bytes from %s", n, conn.RemoteAddr())
-			log.Printf("raw: %q", string(buf[:n]))
-
-			if bytes.Contains(payload, []byte("PING")) {
-				_, _ = writer.WriteString("+PONG\r\n")
-			} else {
-				_, _ = writer.WriteString("-ERR unsupported (RESP parsing not implemented yet)\r\n")
-			}
-
-			if ferr := writer.Flush(); ferr != nil {
-				log.Printf("flush error to %s: %v", conn.RemoteAddr(), ferr)
-				return
-			}
-		}
-
+		v, err := resp.Decode(reader)
 		if err != nil {
 			if err == io.EOF {
 				log.Printf("clieent disconnected: %s", conn.RemoteAddr())
-			} else {
-				log.Printf("read error from %s: %v", conn.RemoteAddr(), err)
+				return
 			}
+			log.Printf("decode error from %s: %v", conn.RemoteAddr(), err)
+			_, _ = writer.WriteString("-ERR protocol error\r\n")
+			_ = writer.Flush()
+			return
+		}
+
+		cmd, ok := decodeCommand(v)
+		if !ok {
+			_, _ = writer.WriteString("-ERR expected array of bulk strings\r\n")
+			_ = writer.Flush()
+			continue
+		}
+
+		switch cmd {
+		case "PING":
+			_, _ = writer.WriteString("+PONG\r\n")
+		default:
+			_, _ = writer.WriteString("-ERR unknown command\r\n")
+		}
+
+		if err := writer.Flush(); err != nil {
+			log.Printf("flush error to %s: %v", conn.RemoteAddr(), err)
 			return
 		}
 	}
+}
+
+// Extracts the command name from a RESP array of Bulk strings
+func decodeCommand(v resp.Value) (string, bool) {
+	if v.Type != resp.Array || len(v.Array) == 0 {
+		return "", false
+	}
+
+	first := v.Array[0]
+	if first.Type != resp.BulkString || first.Bulk == nil {
+		return "", false
+	}
+
+	cmd := strings.ToUpper(string(first.Bulk))
+	return cmd, true
 }
