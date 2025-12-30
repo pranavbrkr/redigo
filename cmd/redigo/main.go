@@ -29,6 +29,11 @@ func main() {
 		}
 
 		log.Printf("accepted connection from %s", conn.RemoteAddr())
-		_ = conn.Close()
+		go handleConn(conn)
 	}
+}
+
+func handleConn(conn net.Conn) {
+	defer conn.Close()
+	log.Printf("client handler started for %s", conn.RemoteAddr())
 }
