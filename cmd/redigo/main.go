@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"flag"
 	"fmt"
 	"io"
@@ -40,14 +41,27 @@ func handleConn(conn net.Conn) {
 	log.Printf("client handler started for %s", conn.RemoteAddr())
 
 	reader := bufio.NewReader(conn)
+	writer := bufio.NewWriter(conn)
 
 	buf := make([]byte, 4096)
 
 	for {
 		n, err := reader.Read(buf)
 		if n > 0 {
+			payload := buf[:n]
 			log.Printf("received %d bytes from %s", n, conn.RemoteAddr())
 			log.Printf("raw: %q", string(buf[:n]))
+
+			if bytes.Contains(payload, []byte("PING")) {
+				_, _ = writer.WriteString("+PONG\r\n")
+			} else {
+				_, _ = writer.WriteString("-ERR unsupported (RESP parsing not implemented yet)\r\n")
+			}
+
+			if ferr := writer.Flush(); ferr != nil {
+				log.Printf("flush error to %s: %v", conn.RemoteAddr(), ferr)
+				return
+			}
 		}
 
 		if err != nil {
