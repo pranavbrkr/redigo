@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 )
@@ -36,4 +38,25 @@ func main() {
 func handleConn(conn net.Conn) {
 	defer conn.Close()
 	log.Printf("client handler started for %s", conn.RemoteAddr())
+
+	reader := bufio.NewReader(conn)
+
+	buf := make([]byte, 4096)
+
+	for {
+		n, err := reader.Read(buf)
+		if n > 0 {
+			log.Printf("received %d bytes from %s", n, conn.RemoteAddr())
+			log.Printf("raw: %q", string(buf[:n]))
+		}
+
+		if err != nil {
+			if err == io.EOF {
+				log.Printf("clieent disconnected: %s", conn.RemoteAddr())
+			} else {
+				log.Printf("read error from %s: %v", conn.RemoteAddr(), err)
+			}
+			return
+		}
+	}
 }
