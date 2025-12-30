@@ -52,7 +52,6 @@ func handleConn(conn net.Conn) {
 				log.Printf("client disconnected: %s", conn.RemoteAddr())
 				return
 			}
-
 			log.Printf("decode error from %s: %v", conn.RemoteAddr(), err)
 			if _, werr := writer.WriteString("-ERR protocol error\r\n"); werr != nil {
 				log.Printf("write error to %s: %v", conn.RemoteAddr(), werr)
@@ -64,7 +63,10 @@ func handleConn(conn net.Conn) {
 			return
 		}
 
+		log.Printf("decoded value type=%v from %s", v.Type, conn.RemoteAddr())
+
 		cmd, ok := decodeCommand(v)
+		log.Printf("command=%s from %s", cmd, conn.RemoteAddr())
 		if !ok {
 			if _, werr := writer.WriteString("-ERR expected arry of bulk strings\r\n"); werr != nil {
 				log.Printf("write error to %s: %v", conn.RemoteAddr(), werr)
