@@ -66,7 +66,7 @@ func handleConn(conn net.Conn) {
 			return
 		}
 
-		cmd, ok := decodeCommand(v)
+		cmd, args, ok := decodeCommandParts(v)
 		if !ok {
 			_ = resp.WriteError(writer, "-ERR expected array of bulk strings\r\n")
 			_ = writer.Flush()
@@ -76,6 +76,12 @@ func handleConn(conn net.Conn) {
 		switch cmd {
 		case "PING":
 			_ = resp.WriteSimpleString(writer, "PONG")
+		case "ECHO":
+			if len(args) < 1 {
+				_ = resp.WriteError(writer, "ERR wrong number of argunments for 'echo' command")
+				break
+			}
+			_ = resp.WriteBulkString(writer, []byte(args[0]))
 		default:
 			_ = resp.WriteError(writer, "ERR unknown command")
 		}
@@ -86,17 +92,23 @@ func handleConn(conn net.Conn) {
 	}
 }
 
-func decodeCommand(v resp.Value) (string, bool) {
+func decodeCommandParts(v resp.Value) (string, []string, bool) {
 	if v.Type != resp.Array || len(v.Array) == 0 {
-		return "", false
+		return "", nil, false
 	}
 
-	first := v.Array[0]
-	if first.Type != resp.BulkString || first.Bulk == nil {
-		return "", false
+	parts := make([]string, 0, len(v.Array))
+	for _, item := range v.Array {
+		if item.Type != resp.BulkString || item.Bulk == nil {
+			return "", nil, false
+		}
+		parts = append(parts, string(item.Bulk))
 	}
 
-	return strings.ToUpper(string(first.Bulk)), true
+	cmd := strings.ToUpper(parts[0])
+	args := parts[1:]
+	return cmd, args, true
+
 }
 
 func isConnReset(err error) bool {
