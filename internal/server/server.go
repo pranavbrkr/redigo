@@ -61,23 +61,23 @@ func handleConn(conn net.Conn) {
 			if errors.Is(err, io.EOF) || isConnReset(err) {
 				return
 			}
-			_, _ = writer.WriteString("-ERR protocol error\r\n")
+			_ = resp.WriteError(writer, "ERR protocol error")
 			_ = writer.Flush()
 			return
 		}
 
 		cmd, ok := decodeCommand(v)
 		if !ok {
-			_, _ = writer.WriteString("-ERR expected array of bulk strings\r\n")
+			_ = resp.WriteError(writer, "-ERR expected array of bulk strings\r\n")
 			_ = writer.Flush()
 			continue
 		}
 
 		switch cmd {
 		case "PING":
-			_, _ = writer.WriteString("+PONG\r\n")
+			_ = resp.WriteSimpleString(writer, "PONG")
 		default:
-			_, _ = writer.WriteString("-ERR unknown command\r\n")
+			_ = resp.WriteError(writer, "ERR unknown command")
 		}
 
 		if err := writer.Flush(); err != nil {
