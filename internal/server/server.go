@@ -78,12 +78,14 @@ func handleConn(conn net.Conn, st *store.Store) {
 		switch cmd {
 		case "PING":
 			_ = resp.WriteSimpleString(writer, "PONG")
+
 		case "ECHO":
 			if len(args) < 1 {
 				_ = resp.WriteError(writer, "ERR wrong number of argunments for 'echo' command")
 				break
 			}
 			_ = resp.WriteBulkString(writer, []byte(args[0]))
+
 		case "SET":
 			if len(args) < 2 {
 				_ = resp.WriteError(writer, "ERR wrong number of arguments for 'set' command")
@@ -93,6 +95,7 @@ func handleConn(conn net.Conn, st *store.Store) {
 			val := []byte(args[1])
 			st.Set(key, val)
 			_ = resp.WriteSimpleString(writer, "OK")
+
 		case "GET":
 			if len(args) < 1 {
 				_ = resp.WriteError(writer, "ERR wrong number fo arguments for 'get' command")
@@ -105,6 +108,34 @@ func handleConn(conn net.Conn, st *store.Store) {
 				break
 			}
 			_ = resp.WriteBulkString(writer, val)
+
+		case "DEL":
+			if len(args) < 1 {
+				_ = resp.WriteError(writer, "ERR wrong number of arguments for 'del' command")
+				break
+			}
+			var removed int64 = 0
+			for _, key := range args {
+				if st.Del(key) {
+					removed++
+				}
+			}
+			_ = resp.WriteInteger(writer, removed)
+
+		case "EXISTS":
+			if len(args) < 1 {
+				_ = resp.WriteError(writer, "ERR wrong number of arguments for 'exists' command")
+				break
+			}
+
+			var count int64 = 0
+			for _, key := range args {
+				if st.Exists(key) {
+					count++
+				}
+			}
+			_ = resp.WriteInteger(writer, count)
+
 		default:
 			_ = resp.WriteError(writer, "ERR unknown command")
 		}
