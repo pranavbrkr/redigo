@@ -5,10 +5,13 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/pranavbrkr/redigo/internal/store"
 )
 
 func TestEcho(t *testing.T) {
-	s, addr, err := Start("127.0.0.1:0")
+	st := store.New()
+	s, addr, err := Start("127.0.0.1:0", st)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}

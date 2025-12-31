@@ -8,13 +8,15 @@ import (
 	"strings"
 
 	"github.com/pranavbrkr/redigo/internal/protocol/resp"
+	"github.com/pranavbrkr/redigo/internal/store"
 )
 
 type Server struct {
-	ln *net.TCPListener
+	ln    *net.TCPListener
+	store *store.Store
 }
 
-func Start(addr string) (*Server, string, error) {
+func Start(addr string, st *store.Store) (*Server, string, error) {
 	tcpAddr, err := net.ResolveTCPAddr("tcp", addr)
 	if err != nil {
 		return nil, "", err
@@ -24,7 +26,7 @@ func Start(addr string) (*Server, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	s := &Server{ln: ln}
+	s := &Server{ln: ln, store: st}
 
 	go s.acceptLoop()
 
@@ -45,11 +47,11 @@ func (s *Server) acceptLoop() {
 		if err != nil {
 			return
 		}
-		go handleConn(conn)
+		go handleConn(conn, s.store)
 	}
 }
 
-func handleConn(conn net.Conn) {
+func handleConn(conn net.Conn, st *store.Store) {
 	defer conn.Close()
 
 	reader := bufio.NewReader(conn)
@@ -82,6 +84,27 @@ func handleConn(conn net.Conn) {
 				break
 			}
 			_ = resp.WriteBulkString(writer, []byte(args[0]))
+		case "SET":
+			if len(args) < 2 {
+				_ = resp.WriteError(writer, "ERR wrong number of arguments for 'set' command")
+				break
+			}
+			key := args[0]
+			val := []byte(args[1])
+			st.Set(key, val)
+			_ = resp.WriteSimpleString(writer, "OK")
+		case "GET":
+			if len(args) < 1 {
+				_ = resp.WriteError(writer, "ERR wrong number fo arguments for 'get' command")
+				break
+			}
+			key := args[0]
+			val, ok := st.Get(key)
+			if !ok {
+				_ = resp.WriteBulkString(writer, nil)
+				break
+			}
+			_ = resp.WriteBulkString(writer, val)
 		default:
 			_ = resp.WriteError(writer, "ERR unknown command")
 		}

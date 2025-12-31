@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/pranavbrkr/redigo/internal/server"
+	"github.com/pranavbrkr/redigo/internal/store"
 )
 
 func main() {
@@ -14,7 +15,8 @@ func main() {
 
 	addr := ":" + strconv.Itoa(*port)
 
-	s, bound, err := server.Start(addr)
+	st := store.New()
+	s, bound, err := server.Start(addr, st)
 	if err != nil {
 		log.Fatalf("failed to start server on %s: %v", addr, err)
 	}

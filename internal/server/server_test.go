@@ -5,11 +5,14 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/pranavbrkr/redigo/internal/store"
 )
 
 // Small timeout to prevent hanging forever
 func TestPing(t *testing.T) {
-	s, addr, err := Start("127.0.0.1:0")
+	st := store.New()
+	s, addr, err := Start("127.0.0.1:0", st)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
