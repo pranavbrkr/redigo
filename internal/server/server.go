@@ -136,12 +136,9 @@ func handleConn(conn net.Conn, st *store.Store) {
 			}
 			_ = resp.WriteInteger(writer, count)
 		case "COMMAND":
-			// Many clients probe COMMAND on connect. We'll return an empty array.
 			_ = resp.WriteArrayHeader(writer, 0)
 
 		case "INFO":
-			// Minimal INFO response. Redis returns a bulk string with sections.
-			// We'll include a tiny payload so clients don't choke.
 			info := []byte("# Server\r\nredigo:1\r\n")
 			_ = resp.WriteBulkString(writer, info)
 
