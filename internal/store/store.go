@@ -1,30 +1,43 @@
 package store
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
+
+type entry struct {
+	value     []byte
+	expiresAt *time.Time // nil means no expiration
+}
 
 type Store struct {
 	mu   sync.RWMutex
-	data map[string][]byte
+	data map[string]entry
 }
 
 func New() *Store {
 	return &Store{
-		data: make(map[string][]byte),
+		data: make(map[string]entry),
 	}
 }
 
 func (s *Store) Get(key string) ([]byte, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	val, ok := s.data[key]
+	e, ok := s.data[key]
 	if !ok {
 		return nil, false
 	}
 
+	if isExpired(e, time.Now()) {
+		delete(s.data, key)
+		return nil, false
+	}
+
 	// Return a copy so callers can't mutate internal state
-	out := make([]byte, len(val))
-	copy(out, val)
+	out := make([]byte, len(e.value))
+	copy(out, e.value)
 	return out, true
 }
 
@@ -35,24 +48,53 @@ func (s *Store) Set(key string, val []byte) {
 	// Store a copy for safety
 	cp := make([]byte, len(val))
 	copy(cp, val)
-	s.data[key] = cp
+
+	// SET clears any existing expiry
+	s.data[key] = entry{
+		value:     cp,
+		expiresAt: nil,
+	}
 }
 
 func (s *Store) Del(key string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, existed := s.data[key]
-	if existed {
-		delete(s.data, key)
+	e, ok := s.data[key]
+	if !ok {
+		return false
 	}
-	return existed
+
+	// If it's expired. treat it as already gone
+	if isExpired(e, time.Now()) {
+		delete(s.data, key)
+		return false
+	}
+
+	delete(s.data, key)
+	return true
 }
 
 func (s *Store) Exists(key string) bool {
-	s.mu.RLock()
+	s.mu.Lock()
 	defer s.mu.RUnlock()
 
-	_, ok := s.data[key]
-	return ok
+	e, ok := s.data[key]
+	if !ok {
+		return false
+	}
+
+	if isExpired(e, time.Now()) {
+		delete(s.data, key)
+		return false
+	}
+
+	return true
+}
+
+func isExpired(e entry, now time.Time) bool {
+	if e.expiresAt == nil {
+		return false
+	}
+	return !now.Before(*e.expiresAt)
 }
