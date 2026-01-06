@@ -77,7 +77,7 @@ func (s *Store) Del(key string) bool {
 
 func (s *Store) Exists(key string) bool {
 	s.mu.Lock()
-	defer s.mu.RUnlock()
+	defer s.mu.Unlock()
 
 	e, ok := s.data[key]
 	if !ok {
@@ -90,6 +90,61 @@ func (s *Store) Exists(key string) bool {
 	}
 
 	return true
+}
+
+// Expire sets an expirateion on key for given number of seconds
+// Returns true if key exists and expiry was set, false otherwise
+func (s *Store) Expire(key string, seconds int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	e, ok := s.data[key]
+	if !ok {
+		return false
+	}
+
+	now := time.Now()
+	if isExpired(e, now) {
+		delete(s.data, key)
+		return false
+	}
+
+	exp := now.Add(time.Duration(seconds) * time.Second)
+	e.expiresAt = &exp
+	s.data[key] = e
+	return true
+}
+
+// TTL returns Redis-like TTL semantics
+// -2 if key does not exist
+// -1 if key exists but has no expiry
+// >=0 remaining seconds otherwise
+func (s *Store) TTL(key string) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	e, ok := s.data[key]
+	if !ok {
+		return -2
+	}
+
+	now := time.Now()
+	if isExpired(e, now) {
+		delete(s.data, key)
+		return -2
+	}
+
+	if e.expiresAt == nil {
+		return -1
+	}
+
+	remaining := e.expiresAt.Sub(now)
+	sec := int64(remaining / time.Second)
+	if sec < 0 {
+		delete(s.data, key)
+		return -2
+	}
+	return sec
 }
 
 func isExpired(e entry, now time.Time) bool {
