@@ -92,7 +92,7 @@ func (s *Store) Exists(key string) bool {
 	return true
 }
 
-// Expire sets an expirateion on key for given number of seconds
+// Expire sets an expiration on key for given number of seconds
 // Returns true if key exists and expiry was set, false otherwise
 func (s *Store) Expire(key string, seconds int64) bool {
 	s.mu.Lock()
