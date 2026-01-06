@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 
 	"github.com/pranavbrkr/redigo/internal/protocol/resp"
@@ -135,6 +136,32 @@ func handleConn(conn net.Conn, st *store.Store) {
 				}
 			}
 			_ = resp.WriteInteger(writer, count)
+
+		case "EXPIRE":
+			if len(args) != 2 {
+				_ = resp.WriteError(writer, "ERR wrong number of arguments for 'expire' command")
+				break
+			}
+			seconds, err := strconv.ParseInt(args[1], 10, 64)
+			if err != nil {
+				_ = resp.WriteError(writer, "ERR value is not an integer or out of range")
+				break
+			}
+			ok := st.Expire(args[0], seconds)
+			if ok {
+				_ = resp.WriteInteger(writer, 1)
+			} else {
+				_ = resp.WriteInteger(writer, 0)
+			}
+
+		case "TTL":
+			if len(args) != 1 {
+				_ = resp.WriteError(writer, "ERR wrong number of arguments for 'ttl' command")
+				break
+			}
+			ttl := st.TTL(args[0])
+			_ = resp.WriteInteger(writer, ttl)
+
 		case "COMMAND":
 			_ = resp.WriteArrayHeader(writer, 0)
 
