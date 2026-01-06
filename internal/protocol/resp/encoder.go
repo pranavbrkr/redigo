@@ -64,3 +64,21 @@ func WriteBulkString(w *bufio.Writer, b []byte) error {
 	_, err := w.WriteString("\r\n")
 	return err
 }
+
+// WriteArrayHeader writes a RESP Array header: *<n>\r\n
+func WriteArrayHeader(w *bufio.Writer, n int) error {
+	if _, err := w.WriteString("*"); err != nil {
+		return err
+	}
+	if _, err := w.WriteString(strconv.Itoa(n)); err != nil {
+		return err
+	}
+	_, err := w.WriteString("\r\n")
+	return err
+}
+
+// WriteNullArray writes a Null Array: *-1\r\n
+func WriteNullArray(w *bufio.Writer) error {
+	_, err := w.WriteString("*-1\r\n")
+	return err
+}
