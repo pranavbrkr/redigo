@@ -7,14 +7,16 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/pranavbrkr/redigo/internal/protocol/resp"
 	"github.com/pranavbrkr/redigo/internal/store"
 )
 
 type Server struct {
-	ln    *net.TCPListener
-	store *store.Store
+	ln         *net.TCPListener
+	store      *store.Store
+	stopReaper func()
 }
 
 func Start(addr string, st *store.Store) (*Server, string, error) {
@@ -28,6 +30,7 @@ func Start(addr string, st *store.Store) (*Server, string, error) {
 		return nil, "", err
 	}
 	s := &Server{ln: ln, store: st}
+	s.stopReaper = st.StartReaper(500 * time.Millisecond)
 
 	go s.acceptLoop()
 
@@ -37,6 +40,10 @@ func Start(addr string, st *store.Store) (*Server, string, error) {
 func (s *Server) Close() error {
 	if s.ln == nil {
 		return nil
+	}
+
+	if s.stopReaper != nil {
+		s.stopReaper()
 	}
 
 	return s.ln.Close()
