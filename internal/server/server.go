@@ -60,11 +60,15 @@ func (s *Server) acceptLoop() {
 		if err != nil {
 			return
 		}
-		go handleConn(conn, s.store)
+		go handleConn(conn, s.store, s.aof)
 	}
 }
 
-func handleConn(conn net.Conn, st *store.Store) {
+func handleConn(conn net.Conn, st *store.Store, aw aof.Writer) {
+	if aw == nil {
+		aw = aof.NewNoop()
+	}
+
 	defer conn.Close()
 
 	reader := bufio.NewReader(conn)
@@ -105,8 +109,14 @@ func handleConn(conn net.Conn, st *store.Store) {
 				break
 			}
 			key := args[0]
-			val := []byte(args[1])
-			st.Set(key, val)
+			val := args[1]
+
+			// AOF first, then apply
+			if !appendOrErr(writer, aw, "SET", []string{key, val}) {
+				return
+			}
+
+			st.Set(key, []byte(val))
 			_ = resp.WriteSimpleString(writer, "OK")
 
 		case "GET":
@@ -133,6 +143,22 @@ func handleConn(conn net.Conn, st *store.Store) {
 					removed++
 				}
 			}
+
+			// If nothing would be removed, Redis still returns 0 and no state change
+			if removed == 0 {
+				_ = resp.WriteInteger(writer, 0)
+				break
+			}
+
+			if !appendOrErr(writer, aw, "DEL", args) {
+				return
+			}
+
+			// Apply deletes
+			for _, key := range args {
+				st.Del(key)
+			}
+
 			_ = resp.WriteInteger(writer, removed)
 
 		case "EXISTS":
@@ -159,6 +185,17 @@ func handleConn(conn net.Conn, st *store.Store) {
 				_ = resp.WriteError(writer, "ERR value is not an integer or out of range")
 				break
 			}
+
+			// Only append if it will actually set  expiry
+			if !st.Exists(args[0]) {
+				_ = resp.WriteInteger(writer, 0)
+				break
+			}
+
+			if !appendOrErr(writer, aw, "EXPIRE", []string{args[0], args[1]}) {
+				return
+			}
+
 			ok := st.Expire(args[0], seconds)
 			if ok {
 				_ = resp.WriteInteger(writer, 1)
@@ -215,4 +252,13 @@ func isConnReset(err error) bool {
 	return strings.Contains(msg, "wsarecv") ||
 		strings.Contains(msg, "forcibly closed") ||
 		strings.Contains(msg, "connection reset")
+}
+
+func appendOrErr(writer *bufio.Writer, aw aof.Writer, cmd string, args []string) bool {
+	if err := aw.Append(cmd, args); err != nil {
+		_ = resp.WriteError(writer, "ERR aof write failed")
+		_ = writer.Flush()
+		return false
+	}
+	return true
 }
