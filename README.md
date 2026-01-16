@@ -1,4 +1,4 @@
-# redigo
+# Eedigo
 
 A Redis-compatible in-memory key–value store written in Go.
 

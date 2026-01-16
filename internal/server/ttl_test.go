@@ -11,7 +11,7 @@ import (
 
 func TestTTLNonexistentIsMinus2(t *testing.T) {
 	st := store.New()
-	s, addr, err := Start("127.0.0.1:0", st)
+	s, addr, err := Start("127.0.0.1:0", st, nil)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestTTLNonexistentIsMinus2(t *testing.T) {
 
 func TestTTLNoExpiryIsMinus1(t *testing.T) {
 	st := store.New()
-	s, addr, err := Start("127.0.0.1:0", st)
+	s, addr, err := Start("127.0.0.1:0", st, nil)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestTTLNoExpiryIsMinus1(t *testing.T) {
 
 func TestExpireThenTTLIsNonNegative(t *testing.T) {
 	st := store.New()
-	s, addr, err := Start("127.0.0.1:0", st)
+	s, addr, err := Start("127.0.0.1:0", st, nil)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestExpireThenTTLIsNonNegative(t *testing.T) {
 
 func TestExpiredKeyBecomesMissing(t *testing.T) {
 	st := store.New()
-	s, addr, err := Start("127.0.0.1:0", st)
+	s, addr, err := Start("127.0.0.1:0", st, nil)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}

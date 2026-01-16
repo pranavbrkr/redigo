@@ -11,7 +11,7 @@ import (
 
 func TestEcho(t *testing.T) {
 	st := store.New()
-	s, addr, err := Start("127.0.0.1:0", st)
+	s, addr, err := Start("127.0.0.1:0", st, nil)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}

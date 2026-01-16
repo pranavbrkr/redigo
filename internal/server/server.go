@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pranavbrkr/redigo/internal/aof"
 	"github.com/pranavbrkr/redigo/internal/protocol/resp"
 	"github.com/pranavbrkr/redigo/internal/store"
 )
@@ -17,19 +18,23 @@ type Server struct {
 	ln         *net.TCPListener
 	store      *store.Store
 	stopReaper func()
+	aof        aof.Writer
 }
 
-func Start(addr string, st *store.Store) (*Server, string, error) {
+func Start(addr string, st *store.Store, aw aof.Writer) (*Server, string, error) {
 	tcpAddr, err := net.ResolveTCPAddr("tcp", addr)
 	if err != nil {
 		return nil, "", err
+	}
+	if aw == nil {
+		aw = aof.NewNoop()
 	}
 
 	ln, err := net.ListenTCP("tcp", tcpAddr)
 	if err != nil {
 		return nil, "", err
 	}
-	s := &Server{ln: ln, store: st}
+	s := &Server{ln: ln, store: st, aof: aw}
 	s.stopReaper = st.StartReaper(500 * time.Millisecond)
 
 	go s.acceptLoop()
