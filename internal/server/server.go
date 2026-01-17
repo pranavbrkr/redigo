@@ -71,11 +71,11 @@ func (s *Server) acceptLoop() {
 		if err != nil {
 			return
 		}
-		go handleConn(conn, s.store, s.aof)
+		go handleConn(conn, s.store, s.aof, s.fsyncPolicy)
 	}
 }
 
-func handleConn(conn net.Conn, st *store.Store, aw aof.Writer) {
+func handleConn(conn net.Conn, st *store.Store, aw aof.Writer, policy aof.FsyncPolicy) {
 	if aw == nil {
 		aw = aof.NewNoop()
 	}
@@ -123,7 +123,7 @@ func handleConn(conn net.Conn, st *store.Store, aw aof.Writer) {
 			val := args[1]
 
 			// AOF first, then apply
-			if !appendOrErr(writer, aw, "SET", []string{key, val}) {
+			if !appendOrErr(writer, aw, policy, "SET", []string{key, val}) {
 				return
 			}
 
@@ -161,7 +161,7 @@ func handleConn(conn net.Conn, st *store.Store, aw aof.Writer) {
 				break
 			}
 
-			if !appendOrErr(writer, aw, "DEL", args) {
+			if !appendOrErr(writer, aw, policy, "DEL", args) {
 				return
 			}
 
@@ -203,7 +203,7 @@ func handleConn(conn net.Conn, st *store.Store, aw aof.Writer) {
 				break
 			}
 
-			if !appendOrErr(writer, aw, "EXPIRE", []string{args[0], args[1]}) {
+			if !appendOrErr(writer, aw, policy, "EXPIRE", []string{args[0], args[1]}) {
 				return
 			}
 
@@ -265,11 +265,18 @@ func isConnReset(err error) bool {
 		strings.Contains(msg, "connection reset")
 }
 
-func appendOrErr(writer *bufio.Writer, aw aof.Writer, cmd string, args []string) bool {
+func appendOrErr(writer *bufio.Writer, aw aof.Writer, policy aof.FsyncPolicy, cmd string, args []string) bool {
 	if err := aw.Append(cmd, args); err != nil {
 		_ = resp.WriteError(writer, "ERR aof write failed")
 		_ = writer.Flush()
 		return false
+	}
+	if policy == aof.FsyncAlways {
+		if err := aw.Sync(); err != nil {
+			_ = resp.WriteError(writer, "ERR aof sync failed")
+			_ = writer.Flush()
+			return false
+		}
 	}
 	return true
 }
