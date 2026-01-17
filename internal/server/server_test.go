@@ -6,13 +6,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pranavbrkr/redigo/internal/aof"
 	"github.com/pranavbrkr/redigo/internal/store"
 )
 
 // Small timeout to prevent hanging forever
 func TestPing(t *testing.T) {
 	st := store.New()
-	s, addr, err := Start("127.0.0.1:0", st, nil)
+	s, addr, err := Start("127.0.0.1:0", st, nil, aof.FsyncEverySecond)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}

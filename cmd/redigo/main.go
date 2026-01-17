@@ -14,8 +14,10 @@ func main() {
 	port := flag.Int("port", 6379, "TCP port to listen on")
 	aofEnabled := flag.Bool("aof-enabled", false, "Enable append-only file persistence")
 	aofPath := flag.String("aof-path", "appendonly.aof", "Path to AOF file")
+	aofFsync := flag.String("aof-fsync", "everysec", "AOF fsync policy: always|everysec|never")
 
 	flag.Parse()
+	policy := aof.ParseFsyncPolicy(*aofFsync)
 
 	addr := ":" + strconv.Itoa(*port)
 
@@ -62,7 +64,7 @@ func main() {
 	}
 	defer aw.Close()
 
-	s, bound, err := server.Start(addr, st, aw)
+	s, bound, err := server.Start(addr, st, aw, policy)
 	if err != nil {
 		log.Fatalf("failed to start server on %s: %v", addr, err)
 	}

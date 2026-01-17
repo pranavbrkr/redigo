@@ -15,13 +15,15 @@ import (
 )
 
 type Server struct {
-	ln         *net.TCPListener
-	store      *store.Store
-	stopReaper func()
-	aof        aof.Writer
+	ln          *net.TCPListener
+	store       *store.Store
+	stopReaper  func()
+	aof         aof.Writer
+	fsyncPolicy aof.FsyncPolicy
+	stopFsync   func()
 }
 
-func Start(addr string, st *store.Store, aw aof.Writer) (*Server, string, error) {
+func Start(addr string, st *store.Store, aw aof.Writer, fsyncPolicy aof.FsyncPolicy) (*Server, string, error) {
 	tcpAddr, err := net.ResolveTCPAddr("tcp", addr)
 	if err != nil {
 		return nil, "", err
@@ -34,7 +36,7 @@ func Start(addr string, st *store.Store, aw aof.Writer) (*Server, string, error)
 	if err != nil {
 		return nil, "", err
 	}
-	s := &Server{ln: ln, store: st, aof: aw}
+	s := &Server{ln: ln, store: st, aof: aw, fsyncPolicy: fsyncPolicy}
 	s.stopReaper = st.StartReaper(500 * time.Millisecond)
 
 	go s.acceptLoop()

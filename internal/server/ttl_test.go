@@ -6,12 +6,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pranavbrkr/redigo/internal/aof"
 	"github.com/pranavbrkr/redigo/internal/store"
 )
 
 func TestTTLNonexistentIsMinus2(t *testing.T) {
 	st := store.New()
-	s, addr, err := Start("127.0.0.1:0", st, nil)
+	s, addr, err := Start("127.0.0.1:0", st, nil, aof.FsyncEverySecond)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -42,7 +43,7 @@ func TestTTLNonexistentIsMinus2(t *testing.T) {
 
 func TestTTLNoExpiryIsMinus1(t *testing.T) {
 	st := store.New()
-	s, addr, err := Start("127.0.0.1:0", st, nil)
+	s, addr, err := Start("127.0.0.1:0", st, nil, aof.FsyncEverySecond)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -82,7 +83,7 @@ func TestTTLNoExpiryIsMinus1(t *testing.T) {
 
 func TestExpireThenTTLIsNonNegative(t *testing.T) {
 	st := store.New()
-	s, addr, err := Start("127.0.0.1:0", st, nil)
+	s, addr, err := Start("127.0.0.1:0", st, nil, aof.FsyncEverySecond)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -143,7 +144,7 @@ func TestExpireThenTTLIsNonNegative(t *testing.T) {
 
 func TestExpiredKeyBecomesMissing(t *testing.T) {
 	st := store.New()
-	s, addr, err := Start("127.0.0.1:0", st, nil)
+	s, addr, err := Start("127.0.0.1:0", st, nil, aof.FsyncEverySecond)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
