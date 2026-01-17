@@ -39,6 +39,10 @@ func Start(addr string, st *store.Store, aw aof.Writer, fsyncPolicy aof.FsyncPol
 	s := &Server{ln: ln, store: st, aof: aw, fsyncPolicy: fsyncPolicy}
 	s.stopReaper = st.StartReaper(500 * time.Millisecond)
 
+	if s.fsyncPolicy == aof.FsyncEverySecond {
+		s.stopFsync = startFsyncLoop(s.aof, 1*time.Second)
+	}
+
 	go s.acceptLoop()
 
 	return s, ln.Addr().String(), nil
@@ -52,6 +56,11 @@ func (s *Server) Close() error {
 	if s.stopReaper != nil {
 		s.stopReaper()
 	}
+
+	if s.stopFsync != nil {
+		s.stopFsync()
+	}
+	_ = s.aof.Close()
 
 	return s.ln.Close()
 }
@@ -263,4 +272,26 @@ func appendOrErr(writer *bufio.Writer, aw aof.Writer, cmd string, args []string)
 		return false
 	}
 	return true
+}
+
+func startFsyncLoop(aw aof.Writer, interval time.Duration) func() {
+	if interval <= 0 {
+		interval = 1 * time.Second
+	}
+	done := make(chan struct{})
+
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-t.C:
+				_ = aw.Sync()
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	return func() { close(done) }
 }
