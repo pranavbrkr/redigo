@@ -71,14 +71,12 @@ func (s *Server) acceptLoop() {
 		if err != nil {
 			return
 		}
-		go handleConn(conn, s.store, s.aof, s.fsyncPolicy)
+		go s.handleConn(conn)
 	}
 }
 
-func handleConn(conn net.Conn, st *store.Store, aw aof.Writer, policy aof.FsyncPolicy) {
-	if aw == nil {
-		aw = aof.NewNoop()
-	}
+func (s *Server) handleConn(conn net.Conn) {
+	st := s.store
 
 	defer conn.Close()
 
@@ -123,7 +121,9 @@ func handleConn(conn net.Conn, st *store.Store, aw aof.Writer, policy aof.FsyncP
 			val := args[1]
 
 			// AOF first, then apply
-			if !appendOrErr(writer, aw, policy, "SET", []string{key, val}) {
+			if err := s.appendAOF("SET", []string{key, val}); err != nil {
+				_ = resp.WriteError(writer, "ERR aof write failed")
+				_ = writer.Flush()
 				return
 			}
 
@@ -148,6 +148,7 @@ func handleConn(conn net.Conn, st *store.Store, aw aof.Writer, policy aof.FsyncP
 				_ = resp.WriteError(writer, "ERR wrong number of arguments for 'del' command")
 				break
 			}
+
 			var removed int64 = 0
 			for _, key := range args {
 				if st.Del(key) {
@@ -161,7 +162,10 @@ func handleConn(conn net.Conn, st *store.Store, aw aof.Writer, policy aof.FsyncP
 				break
 			}
 
-			if !appendOrErr(writer, aw, policy, "DEL", args) {
+			// AOF first, then apply
+			if err := s.appendAOF("DEL", args); err != nil {
+				_ = resp.WriteError(writer, "ERR aof write failed")
+				_ = writer.Flush()
 				return
 			}
 
@@ -203,7 +207,9 @@ func handleConn(conn net.Conn, st *store.Store, aw aof.Writer, policy aof.FsyncP
 				break
 			}
 
-			if !appendOrErr(writer, aw, policy, "EXPIRE", []string{args[0], args[1]}) {
+			if err := s.appendAOF("EXPIRE", []string{args[0], args[1]}); err != nil {
+				_ = resp.WriteError(writer, "ERR aof write failed")
+				_ = writer.Flush()
 				return
 			}
 
