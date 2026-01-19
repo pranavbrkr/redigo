@@ -23,6 +23,8 @@ func (p FsyncPolicy) String() string {
 	}
 }
 
+// ParseFsyncPolicy maps flag values to a policy.
+// Defaults to everysec for unknown values to keep it resilient.
 func ParseFsyncPolicy(s string) FsyncPolicy {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "always":
