@@ -23,36 +23,4 @@ func (n *Noop) Append(cmd string, args []string) error { return nil }
 func (n *Noop) Sync() error                            { return nil }
 func (n *Noop) Close() error                           { return nil }
 
-// helper to standardize flush policies
-type FsyncPolicy int
-
-const (
-	FsyncNever FsyncPolicy = iota
-	FsyncAlways
-	FsyncEverySecond
-)
-
-func (p FsyncPolicy) String() string {
-	switch p {
-	case FsyncAlways:
-		return "always"
-	case FsyncEverySecond:
-		return "everysec"
-	default:
-		return "never"
-	}
-}
-
-// Small helper for parsing config later
-func ParseFsyncPolicy(s string) FsyncPolicy {
-	switch s {
-	case "always":
-		return FsyncAlways
-	case "everysec":
-		return FsyncEverySecond
-	default:
-		return FsyncNever
-	}
-}
-
 var _ = time.Second
