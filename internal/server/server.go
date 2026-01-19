@@ -302,3 +302,23 @@ func startFsyncLoop(aw aof.Writer, interval time.Duration) func() {
 
 	return func() { close(done) }
 }
+
+func (s *Server) appendAOF(cmd string, args []string) error {
+	if s.aof == nil {
+		return nil
+	}
+
+	// Append the logical operation
+	if err := s.aof.Append(cmd, args); err != nil {
+		return err
+	}
+
+	// If policy is always, force durability right now
+	if s.fsyncPolicy == aof.FsyncAlways {
+		if err := s.aof.Sync(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
