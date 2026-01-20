@@ -42,7 +42,7 @@ func Start(addr string, st *store.Store, aw aof.Writer, fsyncPolicy aof.FsyncPol
 	s.stopReaper = st.StartReaper(500 * time.Millisecond)
 
 	if s.fsyncPolicy == aof.FsyncEverySecond {
-		s.stopFsync = startFsyncLoop(s.aof, 1*time.Second)
+		s.stopFsync = startFsyncLoop(s, 1*time.Second)
 	}
 
 	go s.acceptLoop()
@@ -289,7 +289,7 @@ func appendOrErr(writer *bufio.Writer, aw aof.Writer, policy aof.FsyncPolicy, cm
 	return true
 }
 
-func startFsyncLoop(aw aof.Writer, interval time.Duration) func() {
+func startFsyncLoop(s *Server, interval time.Duration) func() {
 	if interval <= 0 {
 		interval = 1 * time.Second
 	}
@@ -301,7 +301,7 @@ func startFsyncLoop(aw aof.Writer, interval time.Duration) func() {
 		for {
 			select {
 			case <-t.C:
-				_ = aw.Sync()
+				s.syncAOF()
 			case <-done:
 				return
 			}
@@ -332,4 +332,15 @@ func (s *Server) appendAOF(cmd string, args []string) error {
 	}
 
 	return nil
+}
+
+func (s *Server) syncAOF() {
+	if s.aof == nil {
+		return
+	}
+
+	s.aofMu.Lock()
+	defer s.aofMu.Unlock()
+
+	_ = s.aof.Sync()
 }
