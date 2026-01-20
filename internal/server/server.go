@@ -105,18 +105,26 @@ func (s *Server) handleConn(conn net.Conn) {
 
 		switch cmd {
 		case "PING":
-			_ = resp.WriteSimpleString(writer, "PONG")
+			if len(args) == 0 {
+				_ = resp.WriteSimpleString(writer, "PONG")
+				break
+			}
+			if len(args) == 1 {
+				_ = resp.WriteBulkString(writer, []byte(args[0]))
+				break
+			}
+			writeWrongArgs(writer, "PING")
 
 		case "ECHO":
-			if len(args) < 1 {
-				_ = resp.WriteError(writer, "ERR wrong number of argunments for 'echo' command")
+			if len(args) != 1 {
+				writeWrongArgs(writer, "ECHO")
 				break
 			}
 			_ = resp.WriteBulkString(writer, []byte(args[0]))
 
 		case "SET":
-			if len(args) < 2 {
-				_ = resp.WriteError(writer, "ERR wrong number of arguments for 'set' command")
+			if len(args) != 2 {
+				writeWrongArgs(writer, "SET")
 				break
 			}
 			key := args[0]
@@ -124,8 +132,7 @@ func (s *Server) handleConn(conn net.Conn) {
 
 			// AOF first, then apply
 			if err := s.appendAOF("SET", []string{key, val}); err != nil {
-				_ = resp.WriteError(writer, "ERR aof write failed")
-				_ = writer.Flush()
+				writeAOFError(writer, "ERR aof write failed")
 				return
 			}
 
@@ -133,8 +140,8 @@ func (s *Server) handleConn(conn net.Conn) {
 			_ = resp.WriteSimpleString(writer, "OK")
 
 		case "GET":
-			if len(args) < 1 {
-				_ = resp.WriteError(writer, "ERR wrong number fo arguments for 'get' command")
+			if len(args) != 1 {
+				writeWrongArgs(writer, "GET")
 				break
 			}
 			key := args[0]
@@ -147,7 +154,7 @@ func (s *Server) handleConn(conn net.Conn) {
 
 		case "DEL":
 			if len(args) < 1 {
-				_ = resp.WriteError(writer, "ERR wrong number of arguments for 'del' command")
+				writeWrongArgs(writer, "DEL")
 				break
 			}
 
@@ -182,7 +189,7 @@ func (s *Server) handleConn(conn net.Conn) {
 
 		case "EXISTS":
 			if len(args) < 1 {
-				_ = resp.WriteError(writer, "ERR wrong number of arguments for 'exists' command")
+				writeWrongArgs(writer, "EXISTS")
 				break
 			}
 
@@ -196,7 +203,7 @@ func (s *Server) handleConn(conn net.Conn) {
 
 		case "EXPIRE":
 			if len(args) != 2 {
-				_ = resp.WriteError(writer, "ERR wrong number of arguments for 'expire' command")
+				writeWrongArgs(writer, "EXPIRE")
 				break
 			}
 
@@ -224,21 +231,29 @@ func (s *Server) handleConn(conn net.Conn) {
 
 		case "TTL":
 			if len(args) != 1 {
-				_ = resp.WriteError(writer, "ERR wrong number of arguments for 'ttl' command")
+				writeWrongArgs(writer, "TTL")
 				break
 			}
 			ttl := st.TTL(args[0])
 			_ = resp.WriteInteger(writer, ttl)
 
 		case "COMMAND":
+			if len(args) != 0 {
+				writeWrongArgs(writer, "COMMAND")
+				break
+			}
 			_ = resp.WriteArrayHeader(writer, 0)
 
 		case "INFO":
+			if len(args) != 0 {
+				writeWrongArgs(writer, "INFO")
+				break
+			}
 			info := []byte("# Server\r\nredigo:1\r\n")
 			_ = resp.WriteBulkString(writer, info)
 
 		default:
-			_ = resp.WriteError(writer, "ERR unknown command")
+			_ = resp.WriteError(writer, "ERR unknown command '"+strings.ToLower(cmd)+"'")
 		}
 
 		if err := writer.Flush(); err != nil {
@@ -327,4 +342,17 @@ func (s *Server) syncAOF() {
 	defer s.aofMu.Unlock()
 
 	_ = s.aof.Sync()
+}
+
+func wrongArgs(cmd string) string {
+	return "ERR wrong number of arguments for '" + strings.ToLower(cmd) + "' command"
+}
+
+func writeWrongArgs(w *bufio.Writer, cmd string) {
+	_ = resp.WriteError(w, wrongArgs(cmd))
+}
+
+func writeAOFError(w *bufio.Writer, msg string) {
+	_ = resp.WriteError(w, msg)
+	_ = w.Flush()
 }
