@@ -7,6 +7,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pranavbrkr/redigo/internal/aof"
@@ -21,6 +22,7 @@ type Server struct {
 	aof         aof.Writer
 	fsyncPolicy aof.FsyncPolicy
 	stopFsync   func()
+	aofMu       sync.Mutex
 }
 
 func Start(addr string, st *store.Store, aw aof.Writer, fsyncPolicy aof.FsyncPolicy) (*Server, string, error) {
@@ -313,6 +315,9 @@ func (s *Server) appendAOF(cmd string, args []string) error {
 	if s.aof == nil {
 		return nil
 	}
+
+	s.aofMu.Lock()
+	defer s.aofMu.Unlock()
 
 	// Append the logical operation
 	if err := s.aof.Append(cmd, args); err != nil {
