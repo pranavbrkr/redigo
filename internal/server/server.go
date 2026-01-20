@@ -273,22 +273,6 @@ func isConnReset(err error) bool {
 		strings.Contains(msg, "connection reset")
 }
 
-func appendOrErr(writer *bufio.Writer, aw aof.Writer, policy aof.FsyncPolicy, cmd string, args []string) bool {
-	if err := aw.Append(cmd, args); err != nil {
-		_ = resp.WriteError(writer, "ERR aof write failed")
-		_ = writer.Flush()
-		return false
-	}
-	if policy == aof.FsyncAlways {
-		if err := aw.Sync(); err != nil {
-			_ = resp.WriteError(writer, "ERR aof sync failed")
-			_ = writer.Flush()
-			return false
-		}
-	}
-	return true
-}
-
 func startFsyncLoop(s *Server, interval time.Duration) func() {
 	if interval <= 0 {
 		interval = 1 * time.Second
