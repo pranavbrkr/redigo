@@ -1,9 +1,14 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
+	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
+	"time"
 
 	"github.com/pranavbrkr/redigo/internal/aof"
 	"github.com/pranavbrkr/redigo/internal/server"
@@ -62,17 +67,35 @@ func main() {
 		}
 		aw = faof
 	}
-	defer aw.Close()
 
 	s, bound, err := server.Start(addr, st, aw, policy)
 	if err != nil {
 		log.Fatalf("failed to start server on %s: %v", addr, err)
 	}
-	defer s.Close()
 
 	log.Printf("redigo listening on %s", bound)
 
-	// Adding shutdown later
-	select {}
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
+	sig := <-sigCh
+	signal.Stop(sigCh)
+	log.Printf("shutdown signal received: %v", sig)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		// Close server first
+		_ = s.Close()
+		close(shutdownDone)
+	}()
+
+	select {
+	case <-shutdownDone:
+		log.Printf("shutdown complete")
+	case <-ctx.Done():
+		log.Printf("shutdown timed out")
+	}
 }
