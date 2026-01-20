@@ -98,7 +98,7 @@ func (s *Server) handleConn(conn net.Conn) {
 
 		cmd, args, ok := decodeCommandParts(v)
 		if !ok {
-			_ = resp.WriteError(writer, "-ERR expected array of bulk strings\r\n")
+			_ = resp.WriteError(writer, "ERR expected array of bulk strings")
 			_ = writer.Flush()
 			continue
 		}
@@ -151,29 +151,31 @@ func (s *Server) handleConn(conn net.Conn) {
 				break
 			}
 
-			var removed int64 = 0
+			// Decide what will actually be deleted (EXISTS purges expired keys too)
+			toDelete := make([]string, 0, len(args))
 			for _, key := range args {
-				if st.Del(key) {
-					removed++
+				if st.Exists(key) {
+					toDelete = append(toDelete, key)
 				}
 			}
 
-			// If nothing would be removed, Redis still returns 0 and no state change
-			if removed == 0 {
+			if len(toDelete) == 0 {
 				_ = resp.WriteInteger(writer, 0)
 				break
 			}
 
-			// AOF first, then apply
-			if err := s.appendAOF("DEL", args); err != nil {
+			// AOF first (durability), then apply
+			if err := s.appendAOF("DEL", toDelete); err != nil {
 				_ = resp.WriteError(writer, "ERR aof write failed")
 				_ = writer.Flush()
 				return
 			}
 
-			// Apply deletes
-			for _, key := range args {
-				st.Del(key)
+			var removed int64
+			for _, key := range toDelete {
+				if st.Del(key) {
+					removed++
+				}
 			}
 
 			_ = resp.WriteInteger(writer, removed)
@@ -197,30 +199,28 @@ func (s *Server) handleConn(conn net.Conn) {
 				_ = resp.WriteError(writer, "ERR wrong number of arguments for 'expire' command")
 				break
 			}
+
 			seconds, err := strconv.ParseInt(args[1], 10, 64)
 			if err != nil {
 				_ = resp.WriteError(writer, "ERR value is not an integer or out of range")
 				break
 			}
 
-			// Only append if it will actually set  expiry
-			if !st.Exists(args[0]) {
+			// Apply first (decides if state changes). Store will purge expired keys too.
+			ok := st.Expire(args[0], seconds)
+			if !ok {
 				_ = resp.WriteInteger(writer, 0)
 				break
 			}
 
+			// Now log to AOF (state change happened)
 			if err := s.appendAOF("EXPIRE", []string{args[0], args[1]}); err != nil {
 				_ = resp.WriteError(writer, "ERR aof write failed")
 				_ = writer.Flush()
 				return
 			}
 
-			ok := st.Expire(args[0], seconds)
-			if ok {
-				_ = resp.WriteInteger(writer, 1)
-			} else {
-				_ = resp.WriteInteger(writer, 0)
-			}
+			_ = resp.WriteInteger(writer, 1)
 
 		case "TTL":
 			if len(args) != 1 {

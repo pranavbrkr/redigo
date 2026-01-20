@@ -24,3 +24,4 @@ the standard `redis-cli` client.
 ## Running (Windows)
 ```powershell
 go run ./cmd/redigo
+go run ./cmd/redigo -aof-enabled=true -aof-path data/appendonly.aof
