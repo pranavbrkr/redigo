@@ -367,12 +367,8 @@ func (s *Server) syncAOF() {
 	_ = s.aof.Sync()
 }
 
-func wrongArgs(cmd string) string {
-	return "ERR wrong number of arguments for '" + strings.ToLower(cmd) + "' command"
-}
-
 func writeWrongArgs(w *bufio.Writer, cmd string) {
-	_ = resp.WriteError(w, wrongArgs(cmd))
+	_ = resp.WriteError(w, "ERR wrong number of arguments for '"+strings.ToLower(cmd)+"' command")
 }
 
 func writeAOFError(w *bufio.Writer, msg string) {
