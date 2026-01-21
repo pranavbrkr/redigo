@@ -109,6 +109,11 @@ func (s *Store) Expire(key string, seconds int64) bool {
 		return false
 	}
 
+	if seconds <= 0 {
+		delete(s.data, key)
+		return true
+	}
+
 	exp := now.Add(time.Duration(seconds) * time.Second)
 	e.expiresAt = &exp
 	s.data[key] = e
@@ -140,10 +145,11 @@ func (s *Store) TTL(key string) int64 {
 
 	remaining := e.expiresAt.Sub(now)
 	sec := int64(remaining / time.Second)
-	if sec < 0 {
-		delete(s.data, key)
-		return -2
-	}
+	// Not needed may be
+	// if sec < 0 {
+	// 	delete(s.data, key)
+	// 	return -2
+	// }
 	return sec
 }
 
@@ -152,4 +158,34 @@ func isExpired(e entry, now time.Time) bool {
 		return false
 	}
 	return !now.Before(*e.expiresAt)
+}
+
+// ExpireAt sets an absolute expiration time on key (unix seconds).
+// Returns true if key exists and expiry was set, false otherwise.
+func (s *Store) ExpireAt(key string, unixSec int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	e, ok := s.data[key]
+	if !ok {
+		return false
+	}
+
+	now := time.Now()
+	if isExpired(e, now) {
+		delete(s.data, key)
+		return false
+	}
+
+	exp := time.Unix(unixSec, 0)
+
+	// If the timestamp is now/past, key is deleted immediately (Redis-like)
+	if !now.Before(exp) {
+		delete(s.data, key)
+		return true
+	}
+
+	e.expiresAt = &exp
+	s.data[key] = e
+	return true
 }

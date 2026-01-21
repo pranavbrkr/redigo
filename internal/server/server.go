@@ -213,15 +213,17 @@ func (s *Server) handleConn(conn net.Conn) {
 				break
 			}
 
-			// Apply first (decides if state changes). Store will purge expired keys too.
-			ok := st.Expire(args[0], seconds)
+			// If key doesn't exist / is expired, ExpireAt will return false.
+			unix := time.Now().Add(time.Duration(seconds) * time.Second).Unix()
+
+			ok := st.ExpireAt(args[0], unix)
 			if !ok {
 				_ = resp.WriteInteger(writer, 0)
 				break
 			}
 
-			// Now log to AOF (state change happened)
-			if err := s.appendAOF("EXPIRE", []string{args[0], args[1]}); err != nil {
+			// Persist absolute expiry so replay is correct after restart.
+			if err := s.appendAOF("EXPIREAT", []string{args[0], strconv.FormatInt(unix, 10)}); err != nil {
 				_ = resp.WriteError(writer, "ERR aof write failed")
 				_ = writer.Flush()
 				return

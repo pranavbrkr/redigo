@@ -38,11 +38,14 @@ func main() {
 					return nil
 				}
 				st.Set(args[0], []byte(args[1]))
+
 			case "DEL":
 				for _, k := range args {
 					st.Del(k)
 				}
+
 			case "EXPIRE":
+				// Backwards compat with older AOFs (relative expiry)
 				if len(args) != 2 {
 					return nil
 				}
@@ -51,6 +54,17 @@ func main() {
 					return nil
 				}
 				st.Expire(args[0], sec)
+
+			case "EXPIREAT":
+				if len(args) != 2 {
+					return nil
+				}
+				unixSec, err := strconv.ParseInt(args[1], 10, 64)
+				if err != nil {
+					return nil
+				}
+				st.ExpireAt(args[0], unixSec)
+
 			default:
 				// Ignore unknown entries to keep replay resilient
 			}
