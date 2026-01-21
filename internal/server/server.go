@@ -231,6 +231,33 @@ func (s *Server) handleConn(conn net.Conn) {
 
 			_ = resp.WriteInteger(writer, 1)
 
+		case "EXPIREAT":
+			if len(args) != 2 {
+				writeWrongArgs(writer, "EXPIREAT")
+				break
+			}
+
+			unixSec, err := strconv.ParseInt(args[1], 10, 64)
+			if err != nil {
+				_ = resp.WriteError(writer, "ERR value is not an integer or out of range")
+				break
+			}
+
+			ok := st.ExpireAt(args[0], unixSec)
+			if !ok {
+				_ = resp.WriteInteger(writer, 0)
+				break
+			}
+
+			// Persist (absolute)
+			if err := s.appendAOF("EXPIREAT", []string{args[0], args[1]}); err != nil {
+				_ = resp.WriteError(writer, "ERR aof write failed")
+				_ = writer.Flush()
+				return
+			}
+
+			_ = resp.WriteInteger(writer, 1)
+
 		case "TTL":
 			if len(args) != 1 {
 				writeWrongArgs(writer, "TTL")
