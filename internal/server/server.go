@@ -238,18 +238,41 @@ func (s *Server) handleConn(conn net.Conn) {
 			_ = resp.WriteInteger(writer, ttl)
 
 		case "COMMAND":
-			if len(args) != 0 {
-				writeWrongArgs(writer, "COMMAND")
+			if len(args) == 0 {
+				// List supported commands
+				_ = resp.WriteArrayHeader(writer, 9)
+
+				writeCommandDoc(writer, "PING", -1, []string{"fast"})
+				writeCommandDoc(writer, "ECHO", 2, []string{"fast"})
+				writeCommandDoc(writer, "SET", 3, []string{"write"})
+				writeCommandDoc(writer, "GET", 2, []string{"readonly", "fast"})
+				writeCommandDoc(writer, "DEL", -2, []string{"write"})
+				writeCommandDoc(writer, "EXISTS", -2, []string{"readonly", "fast"})
+				writeCommandDoc(writer, "EXPIRE", 3, []string{"write", "fast"})
+				writeCommandDoc(writer, "TTL", 2, []string{"readonly", "fast"})
+				writeCommandDoc(writer, "INFO", -1, []string{"readonly"})
+
 				break
 			}
-			_ = resp.WriteArrayHeader(writer, 0)
+
+			if len(args) == 1 && strings.ToUpper(args[0]) == "COUNT" {
+				_ = resp.WriteInteger(writer, 9)
+				break
+			}
+
+			writeWrongArgs(writer, "COMMAND")
 
 		case "INFO":
 			if len(args) != 0 {
 				writeWrongArgs(writer, "INFO")
 				break
 			}
-			info := []byte("# Server\r\nredigo:1\r\n")
+			info := []byte(
+				"# Server\r\n" +
+					"redis_version:0.0.1\r\n" +
+					"redigo:1\r\n" +
+					"tcp_port:6379\r\n",
+			)
 			_ = resp.WriteBulkString(writer, info)
 
 		default:
@@ -355,4 +378,17 @@ func writeWrongArgs(w *bufio.Writer, cmd string) {
 func writeAOFError(w *bufio.Writer, msg string) {
 	_ = resp.WriteError(w, msg)
 	_ = w.Flush()
+}
+
+func writeCommandDoc(w *bufio.Writer, name string, arity int64, flags []string) {
+	// Format loosely matches Redis COMMAND output:
+	// [name, arity, [flags...]]
+	_ = resp.WriteArrayHeader(w, 3)
+	_ = resp.WriteBulkString(w, []byte(strings.ToLower(name)))
+	_ = resp.WriteInteger(w, arity)
+
+	_ = resp.WriteArrayHeader(w, int(len(flags)))
+	for _, f := range flags {
+		_ = resp.WriteBulkString(w, []byte(f))
+	}
 }
