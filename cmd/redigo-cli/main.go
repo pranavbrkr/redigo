@@ -31,6 +31,7 @@ func main() {
 	w := bufio.NewWriter(conn)
 
 	// One-shot mode: redigo-cli PING
+	// Note: quoting is handled by the shell in one-shot mode.
 	if flag.NArg() > 0 {
 		args := flag.Args()
 		if err := sendCommand(w, args); err != nil {
@@ -57,15 +58,23 @@ func main() {
 			fmt.Println()
 			return
 		}
+
 		line := strings.TrimSpace(in.Text())
 		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "#") {
 			continue
 		}
 		if strings.EqualFold(line, "quit") || strings.EqualFold(line, "exit") {
 			return
 		}
 
-		parts := strings.Fields(line)
+		parts, err := parseArgs(line)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ERR %v\n", err)
+			continue
+		}
 		if len(parts) == 0 {
 			continue
 		}
@@ -83,6 +92,108 @@ func main() {
 
 		fmt.Println(formatValue(v, 0))
 	}
+}
+
+// parseArgs splits a single REPL line into args, supporting:
+// - double quotes: "hello world"
+// - escapes inside double quotes: \" \\ \n \t \r
+// - single quotes: 'literal text' (no escapes)
+// - backslash escapes outside quotes: \  -> space, \" -> ", etc.
+func parseArgs(line string) ([]string, error) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return nil, nil
+	}
+
+	var args []string
+	var cur strings.Builder
+
+	const (
+		stNormal = iota
+		stInSingle
+		stInDouble
+		stEscape
+	)
+	state := stNormal
+	prevState := stNormal
+
+	flush := func() {
+		if cur.Len() > 0 {
+			args = append(args, cur.String())
+			cur.Reset()
+		}
+	}
+
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+
+		switch state {
+		case stNormal:
+			switch c {
+			case ' ', '\t':
+				flush()
+			case '\'':
+				state = stInSingle
+			case '"':
+				state = stInDouble
+			case '\\':
+				prevState = stNormal
+				state = stEscape
+			default:
+				cur.WriteByte(c)
+			}
+
+		case stInSingle:
+			if c == '\'' {
+				state = stNormal
+			} else {
+				cur.WriteByte(c)
+			}
+
+		case stInDouble:
+			switch c {
+			case '"':
+				state = stNormal
+			case '\\':
+				prevState = stInDouble
+				state = stEscape
+			default:
+				cur.WriteByte(c)
+			}
+
+		case stEscape:
+			switch c {
+			case 'n':
+				cur.WriteByte('\n')
+			case 'r':
+				cur.WriteByte('\r')
+			case 't':
+				cur.WriteByte('\t')
+			case '\\':
+				cur.WriteByte('\\')
+			case '"':
+				cur.WriteByte('"')
+			case '\'':
+				cur.WriteByte('\'')
+			case ' ':
+				cur.WriteByte(' ')
+			default:
+				// forgiving: unknown escape becomes the literal char
+				cur.WriteByte(c)
+			}
+			state = prevState
+		}
+	}
+
+	if state == stInSingle || state == stInDouble {
+		return nil, fmt.Errorf("unterminated quote")
+	}
+	if state == stEscape {
+		return nil, fmt.Errorf("dangling escape at end of line")
+	}
+
+	flush()
+	return args, nil
 }
 
 func sendCommand(w *bufio.Writer, parts []string) error {
