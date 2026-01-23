@@ -237,19 +237,20 @@ func (s *Server) handleConn(conn net.Conn) {
 				break
 			}
 
-			unixSec, err := strconv.ParseInt(args[1], 10, 64)
+			ts, err := strconv.ParseInt(args[1], 10, 64)
 			if err != nil {
 				_ = resp.WriteError(writer, "ERR value is not an integer or out of range")
 				break
 			}
 
-			ok := st.ExpireAt(args[0], unixSec)
+			// Apply first (decides if state changes)
+			ok := st.ExpireAt(args[0], ts)
 			if !ok {
 				_ = resp.WriteInteger(writer, 0)
 				break
 			}
 
-			// Persist (absolute)
+			// Log after state change (like your EXPIRE flow)
 			if err := s.appendAOF("EXPIREAT", []string{args[0], args[1]}); err != nil {
 				_ = resp.WriteError(writer, "ERR aof write failed")
 				_ = writer.Flush()
@@ -269,7 +270,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		case "COMMAND":
 			if len(args) == 0 {
 				// List supported commands
-				_ = resp.WriteArrayHeader(writer, 9)
+				_ = resp.WriteArrayHeader(writer, 10)
 
 				writeCommandDoc(writer, "PING", -1, []string{"fast"})
 				writeCommandDoc(writer, "ECHO", 2, []string{"fast"})
@@ -280,12 +281,13 @@ func (s *Server) handleConn(conn net.Conn) {
 				writeCommandDoc(writer, "EXPIRE", 3, []string{"write", "fast"})
 				writeCommandDoc(writer, "TTL", 2, []string{"readonly", "fast"})
 				writeCommandDoc(writer, "INFO", -1, []string{"readonly"})
+				writeCommandDoc(writer, "EXPIREAT", 3, []string{"write", "fast"})
 
 				break
 			}
 
 			if len(args) == 1 && strings.ToUpper(args[0]) == "COUNT" {
-				_ = resp.WriteInteger(writer, 9)
+				_ = resp.WriteInteger(writer, 10)
 				break
 			}
 

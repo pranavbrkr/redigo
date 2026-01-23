@@ -160,9 +160,9 @@ func isExpired(e entry, now time.Time) bool {
 	return !now.Before(*e.expiresAt)
 }
 
-// ExpireAt sets an absolute expiration time on key (unix seconds).
-// Returns true if key exists and expiry was set, false otherwise.
-func (s *Store) ExpireAt(key string, unixSec int64) bool {
+// ExpireAt sets an absolute expiration time on key (unix timestamp in seconds).
+// Returns true if key exists and expiry was set (or key deleted due to past timestamp), false otherwise.
+func (s *Store) ExpireAt(key string, unixSeconds int64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -177,9 +177,9 @@ func (s *Store) ExpireAt(key string, unixSec int64) bool {
 		return false
 	}
 
-	exp := time.Unix(unixSec, 0)
+	exp := time.Unix(unixSeconds, 0)
 
-	// If the timestamp is now/past, key is deleted immediately (Redis-like)
+	// Redis semantics: if timestamp is in the past (or now), the key is deleted and return 1 (since it existed)
 	if !now.Before(exp) {
 		delete(s.data, key)
 		return true

@@ -59,11 +59,11 @@ func main() {
 				if len(args) != 2 {
 					return nil
 				}
-				unixSec, err := strconv.ParseInt(args[1], 10, 64)
+				ts, err := strconv.ParseInt(args[1], 10, 64)
 				if err != nil {
 					return nil
 				}
-				st.ExpireAt(args[0], unixSec)
+				st.ExpireAt(args[0], ts)
 
 			default:
 				// Ignore unknown entries to keep replay resilient
