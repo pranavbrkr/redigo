@@ -1,81 +1,96 @@
 # Redigo
 
-Redigo is a Redis-compatible, in-memory key–value store implemented from
-scratch in Go. It's intentionally small and educational while providing a
-faithful subset of Redis behaviour over the RESP2 protocol so standard
-clients like `redis-cli` work unchanged.
+Small, Redis-compatible in-memory key/value store implemented in Go.
 
-Key characteristics
-- Implements a selected set of Redis semantics: `SET`, `GET`, `DEL`, `EXISTS`,
-	`EXPIRE`, `EXPIREAT`, `TTL`, `INFO`, and `COMMAND`.
-- RESP2 protocol parsing and encoding live under `protocol/resp`.
-- In-memory storage with accurate, Redis-style TTL semantics and both
-	immediate and lazy eviction; background expiration is handled by a
-	reaper goroutine in `store/reaper.go`.
-- Durable persistence via an append-only file (AOF) under `internal/aof`.
-	AOF replay restores state on startup and fsync policy is configurable
-	(`always`, `everysec`, `never`) to balance durability vs performance.
-- Concurrent server design with explicit synchronization and graceful
-	shutdown handling.
-- Companion CLI (`cmd/redigo-cli`) with interactive REPL, one-shot mode,
-	piping/script mode, and Redis-style output formatting.
+What this project is
+- A learning-focused Redis-like server that supports a compact, useful
+  subset of Redis commands over the RESP2 protocol.
+- Intended for exploration, experimentation, and small personal projects
+  where you want a lightweight in-memory store with optional AOF persistence.
 
-Why this layout
-- `protocol/resp` isolates all wire-format concerns (decoder/encoder/types).
-- `server/` contains command routing, request lifecycle, and command
-	registration.
-- `store/` owns the in-memory model, TTL bookkeeping, and the reaper.
-- `internal/aof` provides AOF append + replay; tests ensure replay format
-	remains stable.
+Major components
+- `cmd/redigo` — server entrypoint and flags; run the server here.
+- `cmd/redigo-cli` — small companion CLI for interactive use and scripting.
+- `protocol/resp` — RESP2 encoder/decoder and protocol types.
+- `server` — command registration, request lifecycle, and network handling.
+- `store` — in-memory key/value storage, TTL bookkeeping, and reaper.
+- `internal/aof` — append-only file persistence and replay implementation.
 
-Requirements
-- Go 1.25+
-- Windows is supported (no WSL required) but standard Go tooling works across
-	platforms.
+Dependencies & requirements
+- Go: 1.25.0 (see `go.mod`).
+- No external services required; runs locally on supported OSes including Windows.
 
-Quick start (development)
+Quick start — run the server
+PowerShell (Windows):
 ```powershell
+# run in-place (development)
 go run ./cmd/redigo
-# with AOF enabled
+
+# run with AOF persistence enabled (writes to data/appendonly.aof)
 go run ./cmd/redigo -aof-enabled=true -aof-path data/appendonly.aof
 ```
 
-Build
-```powershell
-go build ./cmd/redigo
-go build ./cmd/redigo-cli
+Shell (Linux / macOS):
+```bash
+go run ./cmd/redigo
+go run ./cmd/redigo -aof-enabled=true -aof-path data/appendonly.aof
 ```
 
-Testing
+Build the binaries
 ```powershell
-go test ./...
-# Run a package test: go test ./store -run TestName
+go build -o bin/redigo ./cmd/redigo
+go build -o bin/redigo-cli ./cmd/redigo-cli
 ```
 
-Developer conventions and guidance for contributors / AI agents
-- Wire-level changes: update `protocol/resp` (decoder/encoder) and add
-	codec tests before touching `server` logic.
-- Commands: register handlers in `server/` and add end-to-end tests that
-	exercise RESP requests through the server to the `store`.
-- Persistence: any state-changing command must produce AOF lines compatible
-	with `internal/aof` replay. If you modify serialization, update the
-	AOF tests under `internal/aof`.
-- Expiry: `store` is the sole owner of TTL behavior. Use its APIs rather than
-	duplicating expiration logic elsewhere.
+How to run the server
 
-Testing patterns
-- Tests live next to packages (`*_test.go`) and frequently assert timing/
-	TTL and AOF replay behaviour. Prefer deterministic tests over long sleeps.
+- Build a binary (optional):
+  ```powershell
+  go build -o bin/redigo ./cmd/redigo
+  ```
 
-Scope & non-goals
-- Redigo is intentionally not a full Redis replacement. It omits lists,
-	sets, hashes, pub/sub, clustering and scripting.
+- Run the built binary:
+  ```powershell
+  # default (no AOF)
+  .\bin\redigo
+
+  # enable AOF persistence
+  .\bin\redigo -aof-enabled=true -aof-path data/appendonly.aof
+  ```
+
+- Or run in-place (development):
+  ```powershell
+  go run ./cmd/redigo
+  go run ./cmd/redigo -aof-enabled=true -aof-path data/appendonly.aof
+  ```
+
+- Common flags
+  - `-aof-enabled` (bool): enable append-only persistence (default: false).
+  - `-aof-path` (string): path to the AOF file (default: `data/appendonly.aof`).
+  See `cmd/redigo/main.go` for all flags and defaults.
+
+How to interact with the server
+
+- Using the bundled client (`redigo-cli`):
+  1. Build the CLI:
+     ```powershell
+     go build -o bin/redigo-cli ./cmd/redigo-cli
+     ```
+  2. Use it to send single commands:
+     ```powershell
+     .\bin\redigo-cli set mykey "hello"
+     .\bin\redigo-cli get mykey
+     .\bin\redigo-cli expire mykey 30
+     .\bin\redigo-cli ttl mykey
+     ```
+  3. `redigo-cli` supports interactive and scripting modes — check `cmd/redigo-cli/main.go` for usage details.
+
+- Using other RESP2-compatible clients
+  - `redis-cli` (official Redis client) works against this server — point it at the server host/port.
+  - `memurai-cli` (on Windows) and other RESP2-compatible tools also work.
 
 Notes
-- The repo includes `cmd/redigo` (server) and `cmd/redigo-cli` (client).
-- The AOF file path used by default is `data/appendonly.aof` — tests may
-	create temporary AOF files to isolate persistence behavior.
+- AOF default path: `data/appendonly.aof` (repo root).
+- This project is intentionally minimal and focuses on a small set of commands and clear implementation rather than full Redis feature parity.
 
-If you'd like I can add short examples showing how `SET`/`EXPIRE`/`GET`
-interact, or extract command registration and AOF append examples from
-specific files to include inline in this `README.md`.
+Enjoy!
