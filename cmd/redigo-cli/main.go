@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/pranavbrkr/redigo/internal/protocol/resp"
 )
@@ -16,6 +17,7 @@ import (
 func main() {
 	host := flag.String("h", "127.0.0.1", "server host")
 	port := flag.Int("p", 6379, "server port")
+	raw := flag.Bool("raw", false, "Raw output (no quotes/prefixes); useful for scripting")
 	flag.Parse()
 
 	addr := net.JoinHostPort(*host, strconv.Itoa(*port))
@@ -43,7 +45,10 @@ func main() {
 			fmt.Fprintf(os.Stderr, "ERR read: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Println(formatValue(v, 0))
+		fmt.Print(formatValue(v, formatOpts{raw: *raw}))
+		if !strings.HasSuffix(formatValue(v, formatOpts{raw: *raw}), "\n") {
+			fmt.Println()
+		}
 		return
 	}
 
@@ -90,7 +95,11 @@ func main() {
 			continue
 		}
 
-		fmt.Println(formatValue(v, 0))
+		out := formatValue(v, formatOpts{raw: *raw})
+		fmt.Print(out)
+		if !strings.HasSuffix(out, "\n") {
+			fmt.Println()
+		}
 	}
 }
 
@@ -209,7 +218,18 @@ func sendCommand(w *bufio.Writer, parts []string) error {
 	return w.Flush()
 }
 
-func formatValue(v resp.Value, indent int) string {
+type formatOpts struct {
+	raw bool
+}
+
+func formatValue(v resp.Value, opts formatOpts) string {
+	if opts.raw {
+		return formatRaw(v)
+	}
+	return formatPretty(v)
+}
+
+func formatPretty(v resp.Value) string {
 	switch v.Type {
 	case resp.SimpleString:
 		return v.Str
@@ -221,7 +241,7 @@ func formatValue(v resp.Value, indent int) string {
 		if v.Bulk == nil {
 			return "(nil)"
 		}
-		return string(v.Bulk)
+		return quoteRedisString(string(v.Bulk))
 	case resp.Array:
 		if v.Array == nil {
 			return "(nil)"
@@ -231,7 +251,7 @@ func formatValue(v resp.Value, indent int) string {
 		}
 		var b strings.Builder
 		for i, it := range v.Array {
-			b.WriteString(fmt.Sprintf("%d) %s", i+1, formatValue(it, indent+1)))
+			b.WriteString(fmt.Sprintf("%d) %s", i+1, formatPretty(it)))
 			if i != len(v.Array)-1 {
 				b.WriteByte('\n')
 			}
@@ -240,4 +260,65 @@ func formatValue(v resp.Value, indent int) string {
 	default:
 		return "(unknown)"
 	}
+}
+
+func formatRaw(v resp.Value) string {
+	switch v.Type {
+	case resp.SimpleString:
+		return v.Str
+	case resp.Error:
+		// raw mode still shows errors but without "(error)" prefix
+		return v.Str
+	case resp.Integer:
+		return strconv.FormatInt(v.Int, 10)
+	case resp.BulkString:
+		if v.Bulk == nil {
+			return ""
+		}
+		return string(v.Bulk)
+	case resp.Array:
+		if v.Array == nil || len(v.Array) == 0 {
+			return ""
+		}
+		var b strings.Builder
+		for i, it := range v.Array {
+			b.WriteString(formatRaw(it))
+			if i != len(v.Array)-1 {
+				b.WriteByte('\n')
+			}
+		}
+		return b.String()
+	default:
+		return ""
+	}
+}
+
+// quoteRedisString prints a bulk string like redis-cli: "value"
+// Escapes quotes, backslashes, and control chars.
+func quoteRedisString(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			if unicode.IsControl(r) {
+				// fallback: make control chars visible
+				b.WriteString(fmt.Sprintf(`\x%02x`, r))
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
 }
