@@ -38,7 +38,7 @@ func main() {
 	// 1) One-shot mode: redigo-cli PING
 	if flag.NArg() > 0 {
 		args := flag.Args()
-		if err := sendAndPrintOne(r, w, args, *timeout, formatOpts{raw: *raw}); err != nil {
+		if err := sendAndPrintOne(conn, r, w, args, *timeout, formatOpts{raw: *raw}); err != nil {
 			fmt.Fprintln(os.Stderr, err.Error())
 			os.Exit(1)
 		}
@@ -47,7 +47,7 @@ func main() {
 
 	// 2) Pipe mode: stdin is not a terminal and no args
 	if !stdinIsTerminal() {
-		if err := runPipeMode(r, w, *timeout, formatOpts{raw: *raw}); err != nil {
+		if err := runPipeMode(conn, r, w, *timeout, formatOpts{raw: *raw}); err != nil {
 			fmt.Fprintln(os.Stderr, err.Error())
 			os.Exit(1)
 		}
@@ -55,12 +55,13 @@ func main() {
 	}
 
 	// 3) REPL mode
-	runREPL(addr, r, w, *timeout, formatOpts{raw: *raw})
+	runREPL(addr, conn, r, w, *timeout, formatOpts{raw: *raw})
+
 }
 
 // ---------- modes ----------
 
-func runREPL(addr string, r *bufio.Reader, w *bufio.Writer, timeout time.Duration, opts formatOpts) {
+func runREPL(addr string, conn net.Conn, r *bufio.Reader, w *bufio.Writer, timeout time.Duration, opts formatOpts) {
 	in := bufio.NewScanner(os.Stdin)
 	fmt.Printf("Connected to %s\n", addr)
 
@@ -88,13 +89,14 @@ func runREPL(addr string, r *bufio.Reader, w *bufio.Writer, timeout time.Duratio
 			continue
 		}
 
-		if err := sendAndPrintOne(r, w, parts, timeout, opts); err != nil {
+		if err := sendAndPrintOne(conn, r, w, parts, timeout, opts); err != nil {
 			fmt.Fprintln(os.Stderr, err.Error())
+			continue
 		}
 	}
 }
 
-func runPipeMode(r *bufio.Reader, w *bufio.Writer, timeout time.Duration, opts formatOpts) error {
+func runPipeMode(conn net.Conn, r *bufio.Reader, w *bufio.Writer, timeout time.Duration, opts formatOpts) error {
 	sc := bufio.NewScanner(os.Stdin)
 	// allow longer lines (default is 64K)
 	buf := make([]byte, 0, 256*1024)
@@ -107,13 +109,15 @@ func runPipeMode(r *bufio.Reader, w *bufio.Writer, timeout time.Duration, opts f
 		}
 		parts, err := parseArgs(line)
 		if err != nil {
-			return fmt.Errorf("ERR %v", err)
+			fmt.Fprintln(os.Stderr, "ERR", err)
+			continue
 		}
 		if len(parts) == 0 {
 			continue
 		}
-		if err := sendAndPrintOne(r, w, parts, timeout, opts); err != nil {
-			return err
+		if err := sendAndPrintOne(conn, r, w, parts, timeout, opts); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			continue
 		}
 	}
 	if err := sc.Err(); err != nil {
@@ -122,19 +126,23 @@ func runPipeMode(r *bufio.Reader, w *bufio.Writer, timeout time.Duration, opts f
 	return nil
 }
 
-func sendAndPrintOne(r *bufio.Reader, w *bufio.Writer, parts []string, timeout time.Duration, opts formatOpts) error {
-	// set per-command read deadline so a hung server doesn’t hang the CLI forever
-	// (Dial timeout handled earlier)
-	// Note: net.Conn deadline is on the conn, but we only have reader/writer here,
-	// so we rely on the underlying conn being the one used by r/w.
-	// easiest way: in this small CLI, omit per-command deadline if you want.
-	_ = timeout // kept to avoid changing too much; safe to remove if you don’t use deadlines.
-
+func sendAndPrintOne(conn net.Conn, r *bufio.Reader, w *bufio.Writer, parts []string, timeout time.Duration, opts formatOpts) error {
+	// Write deadline
+	if timeout > 0 {
+		_ = conn.SetWriteDeadline(time.Now().Add(timeout))
+	}
 	if err := sendCommand(w, parts); err != nil {
+		_ = conn.SetWriteDeadline(time.Time{})
 		return fmt.Errorf("ERR write: %v", err)
 	}
+	_ = conn.SetWriteDeadline(time.Time{})
 
+	// Read deadline
+	if timeout > 0 {
+		_ = conn.SetReadDeadline(time.Now().Add(timeout))
+	}
 	v, err := resp.Decode(r)
+	_ = conn.SetReadDeadline(time.Time{})
 	if err != nil {
 		return fmt.Errorf("ERR read: %v", err)
 	}
