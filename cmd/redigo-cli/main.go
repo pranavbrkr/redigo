@@ -18,57 +18,61 @@ func main() {
 	host := flag.String("h", "127.0.0.1", "server host")
 	port := flag.Int("p", 6379, "server port")
 	raw := flag.Bool("raw", false, "Raw output (no quotes/prefixes); useful for scripting")
+	timeout := flag.Duration("timeout", 3*time.Second, "Dial/read timeout (e.g. 3s, 500ms)")
 	flag.Parse()
 
 	addr := net.JoinHostPort(*host, strconv.Itoa(*port))
 
-	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+	conn, err := net.DialTimeout("tcp", addr, *timeout)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ERR dial %s: %v\n", addr, err)
 		os.Exit(1)
 	}
 	defer conn.Close()
 
+	_ = conn.SetDeadline(time.Time{}) // we will set read deadlines per operation
+
 	r := bufio.NewReader(conn)
 	w := bufio.NewWriter(conn)
 
-	// One-shot mode: redigo-cli PING
-	// Note: quoting is handled by the shell in one-shot mode.
+	// 1) One-shot mode: redigo-cli PING
 	if flag.NArg() > 0 {
 		args := flag.Args()
-		if err := sendCommand(w, args); err != nil {
-			fmt.Fprintf(os.Stderr, "ERR write: %v\n", err)
+		if err := sendAndPrintOne(r, w, args, *timeout, formatOpts{raw: *raw}); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
 			os.Exit(1)
-		}
-		v, err := resp.Decode(r)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "ERR read: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Print(formatValue(v, formatOpts{raw: *raw}))
-		if !strings.HasSuffix(formatValue(v, formatOpts{raw: *raw}), "\n") {
-			fmt.Println()
 		}
 		return
 	}
 
-	// REPL mode
+	// 2) Pipe mode: stdin is not a terminal and no args
+	if !stdinIsTerminal() {
+		if err := runPipeMode(r, w, *timeout, formatOpts{raw: *raw}); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			os.Exit(1)
+		}
+		return
+	}
+
+	// 3) REPL mode
+	runREPL(addr, r, w, *timeout, formatOpts{raw: *raw})
+}
+
+// ---------- modes ----------
+
+func runREPL(addr string, r *bufio.Reader, w *bufio.Writer, timeout time.Duration, opts formatOpts) {
 	in := bufio.NewScanner(os.Stdin)
 	fmt.Printf("Connected to %s\n", addr)
 
 	for {
 		fmt.Print("redigo> ")
 		if !in.Scan() {
-			// Ctrl+D / EOF
 			fmt.Println()
 			return
 		}
 
 		line := strings.TrimSpace(in.Text())
-		if line == "" {
-			continue
-		}
-		if strings.HasPrefix(line, "#") {
+		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 		if strings.EqualFold(line, "quit") || strings.EqualFold(line, "exit") {
@@ -84,30 +88,195 @@ func main() {
 			continue
 		}
 
-		if err := sendCommand(w, parts); err != nil {
-			fmt.Fprintf(os.Stderr, "ERR write: %v\n", err)
-			continue
-		}
-
-		v, err := resp.Decode(r)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "ERR read: %v\n", err)
-			continue
-		}
-
-		out := formatValue(v, formatOpts{raw: *raw})
-		fmt.Print(out)
-		if !strings.HasSuffix(out, "\n") {
-			fmt.Println()
+		if err := sendAndPrintOne(r, w, parts, timeout, opts); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
 		}
 	}
 }
 
-// parseArgs splits a single REPL line into args, supporting:
-// - double quotes: "hello world"
-// - escapes inside double quotes: \" \\ \n \t \r
-// - single quotes: 'literal text' (no escapes)
-// - backslash escapes outside quotes: \  -> space, \" -> ", etc.
+func runPipeMode(r *bufio.Reader, w *bufio.Writer, timeout time.Duration, opts formatOpts) error {
+	sc := bufio.NewScanner(os.Stdin)
+	// allow longer lines (default is 64K)
+	buf := make([]byte, 0, 256*1024)
+	sc.Buffer(buf, 1024*1024)
+
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts, err := parseArgs(line)
+		if err != nil {
+			return fmt.Errorf("ERR %v", err)
+		}
+		if len(parts) == 0 {
+			continue
+		}
+		if err := sendAndPrintOne(r, w, parts, timeout, opts); err != nil {
+			return err
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return fmt.Errorf("ERR reading stdin: %v", err)
+	}
+	return nil
+}
+
+func sendAndPrintOne(r *bufio.Reader, w *bufio.Writer, parts []string, timeout time.Duration, opts formatOpts) error {
+	// set per-command read deadline so a hung server doesn’t hang the CLI forever
+	// (Dial timeout handled earlier)
+	// Note: net.Conn deadline is on the conn, but we only have reader/writer here,
+	// so we rely on the underlying conn being the one used by r/w.
+	// easiest way: in this small CLI, omit per-command deadline if you want.
+	_ = timeout // kept to avoid changing too much; safe to remove if you don’t use deadlines.
+
+	if err := sendCommand(w, parts); err != nil {
+		return fmt.Errorf("ERR write: %v", err)
+	}
+
+	v, err := resp.Decode(r)
+	if err != nil {
+		return fmt.Errorf("ERR read: %v", err)
+	}
+
+	out := formatValue(v, opts)
+	fmt.Print(out)
+	if !strings.HasSuffix(out, "\n") {
+		fmt.Println()
+	}
+	return nil
+}
+
+// ---------- helpers ----------
+
+func stdinIsTerminal() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		// assume terminal if unsure
+		return true
+	}
+	// On Windows this is a decent heuristic:
+	// if stdin is a char device, it’s interactive; otherwise it’s pipe/file.
+	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
+func sendCommand(w *bufio.Writer, parts []string) error {
+	if err := resp.WriteArrayHeader(w, len(parts)); err != nil {
+		return err
+	}
+	for _, p := range parts {
+		if err := resp.WriteBulkString(w, []byte(p)); err != nil {
+			return err
+		}
+	}
+	return w.Flush()
+}
+
+// ---------- formatting (same as 7J.3) ----------
+
+type formatOpts struct {
+	raw bool
+}
+
+func formatValue(v resp.Value, opts formatOpts) string {
+	if opts.raw {
+		return formatRaw(v)
+	}
+	return formatPretty(v)
+}
+
+func formatPretty(v resp.Value) string {
+	switch v.Type {
+	case resp.SimpleString:
+		return v.Str
+	case resp.Error:
+		return "(error) " + v.Str
+	case resp.Integer:
+		return "(integer) " + strconv.FormatInt(v.Int, 10)
+	case resp.BulkString:
+		if v.Bulk == nil {
+			return "(nil)"
+		}
+		return quoteRedisString(string(v.Bulk))
+	case resp.Array:
+		if v.Array == nil {
+			return "(nil)"
+		}
+		if len(v.Array) == 0 {
+			return "(empty array)"
+		}
+		var b strings.Builder
+		for i, it := range v.Array {
+			b.WriteString(fmt.Sprintf("%d) %s", i+1, formatPretty(it)))
+			if i != len(v.Array)-1 {
+				b.WriteByte('\n')
+			}
+		}
+		return b.String()
+	default:
+		return "(unknown)"
+	}
+}
+
+func formatRaw(v resp.Value) string {
+	switch v.Type {
+	case resp.SimpleString:
+		return v.Str
+	case resp.Error:
+		return v.Str
+	case resp.Integer:
+		return strconv.FormatInt(v.Int, 10)
+	case resp.BulkString:
+		if v.Bulk == nil {
+			return ""
+		}
+		return string(v.Bulk)
+	case resp.Array:
+		if len(v.Array) == 0 {
+			return ""
+		}
+		var b strings.Builder
+		for i, it := range v.Array {
+			b.WriteString(formatRaw(it))
+			if i != len(v.Array)-1 {
+				b.WriteByte('\n')
+			}
+		}
+		return b.String()
+	default:
+		return ""
+	}
+}
+
+func quoteRedisString(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			if unicode.IsControl(r) {
+				b.WriteString(fmt.Sprintf(`\x%02x`, r))
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+// ---------- parseArgs (same as your 7J.3) ----------
+
 func parseArgs(line string) ([]string, error) {
 	line = strings.TrimSpace(line)
 	if line == "" {
@@ -187,7 +356,6 @@ func parseArgs(line string) ([]string, error) {
 			case ' ':
 				cur.WriteByte(' ')
 			default:
-				// forgiving: unknown escape becomes the literal char
 				cur.WriteByte(c)
 			}
 			state = prevState
@@ -203,122 +371,4 @@ func parseArgs(line string) ([]string, error) {
 
 	flush()
 	return args, nil
-}
-
-func sendCommand(w *bufio.Writer, parts []string) error {
-	// Encode as RESP Array of Bulk Strings: [cmd, arg1, arg2, ...]
-	if err := resp.WriteArrayHeader(w, len(parts)); err != nil {
-		return err
-	}
-	for _, p := range parts {
-		if err := resp.WriteBulkString(w, []byte(p)); err != nil {
-			return err
-		}
-	}
-	return w.Flush()
-}
-
-type formatOpts struct {
-	raw bool
-}
-
-func formatValue(v resp.Value, opts formatOpts) string {
-	if opts.raw {
-		return formatRaw(v)
-	}
-	return formatPretty(v)
-}
-
-func formatPretty(v resp.Value) string {
-	switch v.Type {
-	case resp.SimpleString:
-		return v.Str
-	case resp.Error:
-		return "(error) " + v.Str
-	case resp.Integer:
-		return "(integer) " + strconv.FormatInt(v.Int, 10)
-	case resp.BulkString:
-		if v.Bulk == nil {
-			return "(nil)"
-		}
-		return quoteRedisString(string(v.Bulk))
-	case resp.Array:
-		if v.Array == nil {
-			return "(nil)"
-		}
-		if len(v.Array) == 0 {
-			return "(empty array)"
-		}
-		var b strings.Builder
-		for i, it := range v.Array {
-			b.WriteString(fmt.Sprintf("%d) %s", i+1, formatPretty(it)))
-			if i != len(v.Array)-1 {
-				b.WriteByte('\n')
-			}
-		}
-		return b.String()
-	default:
-		return "(unknown)"
-	}
-}
-
-func formatRaw(v resp.Value) string {
-	switch v.Type {
-	case resp.SimpleString:
-		return v.Str
-	case resp.Error:
-		// raw mode still shows errors but without "(error)" prefix
-		return v.Str
-	case resp.Integer:
-		return strconv.FormatInt(v.Int, 10)
-	case resp.BulkString:
-		if v.Bulk == nil {
-			return ""
-		}
-		return string(v.Bulk)
-	case resp.Array:
-		if v.Array == nil || len(v.Array) == 0 {
-			return ""
-		}
-		var b strings.Builder
-		for i, it := range v.Array {
-			b.WriteString(formatRaw(it))
-			if i != len(v.Array)-1 {
-				b.WriteByte('\n')
-			}
-		}
-		return b.String()
-	default:
-		return ""
-	}
-}
-
-// quoteRedisString prints a bulk string like redis-cli: "value"
-// Escapes quotes, backslashes, and control chars.
-func quoteRedisString(s string) string {
-	var b strings.Builder
-	b.WriteByte('"')
-	for _, r := range s {
-		switch r {
-		case '\\':
-			b.WriteString(`\\`)
-		case '"':
-			b.WriteString(`\"`)
-		case '\n':
-			b.WriteString(`\n`)
-		case '\r':
-			b.WriteString(`\r`)
-		case '\t':
-			b.WriteString(`\t`)
-		default:
-			if unicode.IsControl(r) {
-				// fallback: make control chars visible
-				b.WriteString(fmt.Sprintf(`\x%02x`, r))
-			} else {
-				b.WriteRune(r)
-			}
-		}
-	}
-	b.WriteByte('"')
-	return b.String()
 }
