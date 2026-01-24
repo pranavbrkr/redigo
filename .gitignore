@@ -10,6 +10,7 @@ bin/
 .vscode/
 .idea/
 .DS_Store
+.github/
 
 # Logs / runtime files
 *.log
