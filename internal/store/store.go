@@ -15,6 +15,13 @@ type Store struct {
 	data map[string]entry
 }
 
+// SnapshotEntry represents the minimum data needed to rebuild DB state.
+type SnapshotEntry struct {
+	Key       string
+	Value     []byte
+	ExpiresAt *int64 // unix seconds; nil means no expiry
+}
+
 func New() *Store {
 	return &Store{
 		data: make(map[string]entry),
@@ -187,4 +194,37 @@ func (s *Store) ExpireAt(key string, unixSeconds int64) bool {
 	e.expiresAt = &exp
 	s.data[key] = e
 	return true
+}
+
+// Snapshot returns a point-in-time copy of all non-expired keys.
+// Values are deep-copied. Expired keys are purged during snapshot.
+func (s *Store) Snapshot() []SnapshotEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+
+	out := make([]SnapshotEntry, 0, len(s.data))
+	for k, e := range s.data {
+		if isExpired(e, now) {
+			delete(s.data, k)
+			continue
+		}
+
+		v := make([]byte, len(e.value))
+		copy(v, e.value)
+
+		var exp *int64
+		if e.expiresAt != nil {
+			ts := e.expiresAt.Unix()
+			exp = &ts
+		}
+
+		out = append(out, SnapshotEntry{
+			Key:       k,
+			Value:     v,
+			ExpiresAt: exp,
+		})
+	}
+	return out
 }

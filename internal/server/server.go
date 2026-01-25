@@ -306,6 +306,36 @@ func (s *Server) handleConn(conn net.Conn) {
 			)
 			_ = resp.WriteBulkString(writer, info)
 
+		case "BGREWRITEAOF":
+			if len(args) != 0 {
+				writeWrongArgs(writer, "BGREWRITEAOF")
+				break
+			}
+
+			// Only FileAOF supports rewrite
+			type rewriter interface {
+				Rewrite(snapshot []store.SnapshotEntry) error
+			}
+
+			rw, ok := s.aof.(rewriter)
+			if !ok {
+				_ = resp.WriteError(writer, "ERR aof rewrite not supported")
+				break
+			}
+
+			// Lock AOF during rewrite to serialize with appends/fsync loop
+			s.aofMu.Lock()
+			snap := s.store.Snapshot()
+			err := rw.Rewrite(snap)
+			s.aofMu.Unlock()
+
+			if err != nil {
+				_ = resp.WriteError(writer, "ERR aof rewrite failed")
+				break
+			}
+
+			_ = resp.WriteSimpleString(writer, "OK")
+
 		default:
 			_ = resp.WriteError(writer, "ERR unknown command '"+strings.ToLower(cmd)+"'")
 		}
