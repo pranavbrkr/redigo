@@ -23,6 +23,10 @@ type Server struct {
 	fsyncPolicy aof.FsyncPolicy
 	stopFsync   func()
 	aofMu       sync.Mutex
+	// BGREWRITEAOF state
+	rewriteMu      sync.Mutex
+	rewriteRunning bool
+	rewriteTail    []aof.Entry
 }
 
 func Start(addr string, st *store.Store, aw aof.Writer, fsyncPolicy aof.FsyncPolicy) (*Server, string, error) {
@@ -270,7 +274,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		case "COMMAND":
 			if len(args) == 0 {
 				// List supported commands
-				_ = resp.WriteArrayHeader(writer, 10)
+				_ = resp.WriteArrayHeader(writer, 11)
 
 				writeCommandDoc(writer, "PING", -1, []string{"fast"})
 				writeCommandDoc(writer, "ECHO", 2, []string{"fast"})
@@ -282,12 +286,13 @@ func (s *Server) handleConn(conn net.Conn) {
 				writeCommandDoc(writer, "TTL", 2, []string{"readonly", "fast"})
 				writeCommandDoc(writer, "INFO", -1, []string{"readonly"})
 				writeCommandDoc(writer, "EXPIREAT", 3, []string{"write", "fast"})
+				writeCommandDoc(writer, "BGREWRITEAOF", 1, []string{"admin", "write"})
 
 				break
 			}
 
 			if len(args) == 1 && strings.ToUpper(args[0]) == "COUNT" {
-				_ = resp.WriteInteger(writer, 10)
+				_ = resp.WriteInteger(writer, 11)
 				break
 			}
 
@@ -312,28 +317,18 @@ func (s *Server) handleConn(conn net.Conn) {
 				break
 			}
 
-			// Only FileAOF supports rewrite
-			type rewriter interface {
-				Rewrite(snapshot []store.SnapshotEntry) error
-			}
-
-			rw, ok := s.aof.(rewriter)
+			faof, ok := s.aof.(*aof.FileAOF)
 			if !ok {
 				_ = resp.WriteError(writer, "ERR aof rewrite not supported")
 				break
 			}
 
-			// Lock AOF during rewrite to serialize with appends/fsync loop
-			s.aofMu.Lock()
-			snap := s.store.Snapshot()
-			err := rw.Rewrite(snap)
-			s.aofMu.Unlock()
-
-			if err != nil {
-				_ = resp.WriteError(writer, "ERR aof rewrite failed")
+			if !s.tryStartRewrite() {
+				_ = resp.WriteError(writer, "ERR aof rewrite already in progress")
 				break
 			}
 
+			go s.runRewrite(faof)
 			_ = resp.WriteSimpleString(writer, "OK")
 
 		default:
@@ -399,10 +394,15 @@ func (s *Server) appendAOF(cmd string, args []string) error {
 		return nil
 	}
 
+	// If rewrite is running, capture tail BEFORE we allow finishRewrite() to drain it.
+	// Lock order: rewriteMu -> aofMu (consistent, avoids deadlocks).
+	s.rewriteMu.Lock()
+	defer s.rewriteMu.Unlock()
+
 	s.aofMu.Lock()
 	defer s.aofMu.Unlock()
 
-	// Append the logical operation
+	// Append to AOF
 	if err := s.aof.Append(cmd, args); err != nil {
 		return err
 	}
@@ -412,6 +412,13 @@ func (s *Server) appendAOF(cmd string, args []string) error {
 		if err := s.aof.Sync(); err != nil {
 			return err
 		}
+	}
+
+	// Record tail op if rewrite active (safe: rewriteMu held)
+	if s.rewriteRunning {
+		cp := make([]string, len(args))
+		copy(cp, args)
+		s.rewriteTail = append(s.rewriteTail, aof.Entry{Cmd: cmd, Args: cp})
 	}
 
 	return nil
@@ -448,4 +455,46 @@ func writeCommandDoc(w *bufio.Writer, name string, arity int64, flags []string) 
 	for _, f := range flags {
 		_ = resp.WriteBulkString(w, []byte(f))
 	}
+}
+
+func (s *Server) tryStartRewrite() bool {
+	s.rewriteMu.Lock()
+	defer s.rewriteMu.Unlock()
+
+	if s.rewriteRunning {
+		return false
+	}
+	s.rewriteRunning = true
+	s.rewriteTail = s.rewriteTail[:0]
+	return true
+}
+
+func (s *Server) finishRewrite() []aof.Entry {
+	s.rewriteMu.Lock()
+	defer s.rewriteMu.Unlock()
+
+	tail := append([]aof.Entry(nil), s.rewriteTail...) // copy
+	s.rewriteRunning = false
+	s.rewriteTail = nil
+	return tail
+}
+
+func (s *Server) runRewrite(faof *aof.FileAOF) {
+	// 1) Snapshot fast (brief store lock)
+	snap := s.store.Snapshot()
+
+	// 2) Write compact temp AOF (no blocking of live clients/AOF)
+	tmpPath, err := faof.WriteRewriteTemp(snap)
+	if err != nil {
+		_ = s.finishRewrite()
+		return
+	}
+
+	// 3) Capture tail ops that occurred after snapshot
+	tail := s.finishRewrite()
+
+	// 4) Briefly block AOF appends, swap file, append tail
+	s.aofMu.Lock()
+	_ = faof.InstallRewrite(tmpPath, tail)
+	s.aofMu.Unlock()
 }

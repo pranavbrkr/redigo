@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 
 	"github.com/pranavbrkr/redigo/internal/protocol/resp"
@@ -251,5 +252,125 @@ func (a *FileAOF) Rewrite(snapshot []store.SnapshotEntry) error {
 	a.f = f
 	a.w = bufio.NewWriterSize(f, 64*1024)
 
+	return nil
+}
+
+func (a *FileAOF) WriteRewriteTemp(snapshot []store.SnapshotEntry) (string, error) {
+	dir := filepath.Dir(a.path)
+	tmpPath := filepath.Join(dir, filepath.Base(a.path)+".rewrite.tmp")
+
+	tmp, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return "", fmt.Errorf("open rewrite temp %s: %w", tmpPath, err)
+	}
+	defer func() { _ = tmp.Close() }()
+
+	w := bufio.NewWriterSize(tmp, 64*1024)
+
+	writeCmd := func(cmd string, args ...string) error {
+		if err := resp.WriteArrayHeader(w, 1+len(args)); err != nil {
+			return err
+		}
+		if err := resp.WriteBulkString(w, []byte(cmd)); err != nil {
+			return err
+		}
+		for _, s := range args {
+			if err := resp.WriteBulkString(w, []byte(s)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	for _, e := range snapshot {
+		// SET key value
+		if err := writeCmd("SET", e.Key, string(e.Value)); err != nil {
+			_ = os.Remove(tmpPath)
+			return "", fmt.Errorf("rewrite write SET: %w", err)
+		}
+		// EXPIREAT key unixSeconds
+		if e.ExpiresAt != nil {
+			if err := writeCmd("EXPIREAT", e.Key, strconv.FormatInt(*e.ExpiresAt, 10)); err != nil {
+				_ = os.Remove(tmpPath)
+				return "", fmt.Errorf("rewrite write EXPIREAT: %w", err)
+			}
+		}
+	}
+
+	if err := w.Flush(); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("rewrite flush: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("rewrite fsync: %w", err)
+	}
+
+	return tmpPath, nil
+}
+
+func (a *FileAOF) InstallRewrite(tmpPath string, tail []Entry) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.closed {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("aof closed")
+	}
+
+	// Flush current buffered writes and fsync old AOF best-effort
+	_ = a.w.Flush()
+	_ = a.f.Sync()
+
+	// Close old fd (Windows-friendly rename behavior)
+	_ = a.f.Close()
+
+	// Replace old AOF with temp
+	_ = os.Remove(a.path) // ignore error if doesn't exist
+	if err := os.Rename(tmpPath, a.path); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("install rewrite replace: %w", err)
+	}
+
+	// Reopen live AOF for appends
+	f, err := os.OpenFile(a.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("install rewrite reopen: %w", err)
+	}
+	a.f = f
+	a.w = bufio.NewWriterSize(f, 64*1024)
+
+	// Append tail ops (what happened after snapshot)
+	for _, op := range tail {
+		if err := a.appendLocked(op.Cmd, op.Args); err != nil {
+			return fmt.Errorf("install rewrite tail append: %w", err)
+		}
+	}
+
+	// Make rewritten AOF durable
+	if err := a.w.Flush(); err != nil {
+		return fmt.Errorf("install rewrite flush: %w", err)
+	}
+	if err := a.f.Sync(); err != nil {
+		return fmt.Errorf("install rewrite fsync: %w", err)
+	}
+	return nil
+}
+
+// appendLocked assumes a.mu is held.
+func (a *FileAOF) appendLocked(cmd string, args []string) error {
+	if a.closed {
+		return fmt.Errorf("aof closed")
+	}
+
+	_ = resp.WriteArrayHeader(a.w, 1+len(args))
+	if err := resp.WriteBulkString(a.w, []byte(cmd)); err != nil {
+		return err
+	}
+	for _, s := range args {
+		if err := resp.WriteBulkString(a.w, []byte(s)); err != nil {
+			return err
+		}
+	}
 	return nil
 }

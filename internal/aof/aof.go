@@ -2,6 +2,11 @@ package aof
 
 import "time"
 
+type Entry struct {
+	Cmd  string
+	Args []string
+}
+
 // Appends mutating operations to durable storage
 type Writer interface {
 	Append(cmd string, args []string) error
