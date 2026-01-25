@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"strconv"
 	"strings"
@@ -220,17 +221,25 @@ func (s *Server) handleConn(conn net.Conn) {
 			// If key doesn't exist / is expired, ExpireAt will return false.
 			unix := time.Now().Add(time.Duration(seconds) * time.Second).Unix()
 
-			ok := st.ExpireAt(args[0], unix)
-			if !ok {
+			// Check existence without mutating (Exists purges expired)
+			if !st.Exists(args[0]) {
 				_ = resp.WriteInteger(writer, 0)
 				break
 			}
 
-			// Persist absolute expiry so replay is correct after restart.
+			// Persist absolute expiry first
 			if err := s.appendAOF("EXPIREAT", []string{args[0], strconv.FormatInt(unix, 10)}); err != nil {
 				_ = resp.WriteError(writer, "ERR aof write failed")
 				_ = writer.Flush()
 				return
+			}
+
+			// Now apply
+			ok := st.ExpireAt(args[0], unix)
+			if !ok {
+				// extremely rare race (expired between Exists and ExpireAt)
+				_ = resp.WriteInteger(writer, 0)
+				break
 			}
 
 			_ = resp.WriteInteger(writer, 1)
@@ -480,6 +489,8 @@ func (s *Server) finishRewrite() []aof.Entry {
 }
 
 func (s *Server) runRewrite(faof *aof.FileAOF) {
+	start := time.Now()
+
 	// 1) Snapshot fast (brief store lock)
 	snap := s.store.Snapshot()
 
@@ -487,6 +498,7 @@ func (s *Server) runRewrite(faof *aof.FileAOF) {
 	tmpPath, err := faof.WriteRewriteTemp(snap)
 	if err != nil {
 		_ = s.finishRewrite()
+		log.Printf("[BGREWRITEAOF] failed to write temp: %v", err)
 		return
 	}
 
@@ -495,6 +507,13 @@ func (s *Server) runRewrite(faof *aof.FileAOF) {
 
 	// 4) Briefly block AOF appends, swap file, append tail
 	s.aofMu.Lock()
-	_ = faof.InstallRewrite(tmpPath, tail)
+	installErr := faof.InstallRewrite(tmpPath, tail)
 	s.aofMu.Unlock()
+
+	if installErr != nil {
+		log.Printf("[BGREWRITEAOF] failed to install rewrite (tmp=%s, tail_ops=%d): %v", tmpPath, len(tail), installErr)
+		return
+	}
+
+	log.Printf("[BGREWRITEAOF] completed (keys=%d, tail_ops=%d) in %s", len(snap), len(tail), time.Since(start))
 }
