@@ -62,7 +62,7 @@ func (a *FileAOF) Append(cmd string, args []string) error {
 		}
 	}
 
-	return a.w.Flush()
+	return nil
 }
 
 func (a *FileAOF) Sync() error {
@@ -165,94 +165,11 @@ func decodeAOFCommand(v resp.Value) (string, []string, bool) {
 // Rewrite compacts the AOF to a minimal set of commands representing current state.
 // It is synchronous and blocks concurrent appends.
 func (a *FileAOF) Rewrite(snapshot []store.SnapshotEntry) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if a.closed {
-		return fmt.Errorf("aof closed")
-	}
-
-	// 1) Flush + fsync current AOF (best effort durability before rewrite)
-	_ = a.w.Flush()
-	_ = a.f.Sync()
-
-	// 2) Write new AOF to temp file
-	dir := filepath.Dir(a.path)
-	tmpPath := filepath.Join(dir, filepath.Base(a.path)+".tmp")
-
-	tmp, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	tmpPath, err := a.WriteRewriteTemp(snapshot)
 	if err != nil {
-		return fmt.Errorf("open temp aof %s: %w", tmpPath, err)
+		return err
 	}
-
-	tmpW := bufio.NewWriterSize(tmp, 64*1024)
-
-	writeCmd := func(cmd string, args ...string) error {
-		if err := resp.WriteArrayHeader(tmpW, 1+len(args)); err != nil {
-			return err
-		}
-		if err := resp.WriteBulkString(tmpW, []byte(cmd)); err != nil {
-			return err
-		}
-		for _, s := range args {
-			if err := resp.WriteBulkString(tmpW, []byte(s)); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-
-	for _, e := range snapshot {
-		// SET key value
-		if err := writeCmd("SET", e.Key, string(e.Value)); err != nil {
-			_ = tmp.Close()
-			_ = os.Remove(tmpPath)
-			return fmt.Errorf("rewrite write SET: %w", err)
-		}
-		if e.ExpiresAt != nil {
-			// EXPIREAT key unixSeconds
-			if err := writeCmd("EXPIREAT", e.Key, fmt.Sprintf("%d", *e.ExpiresAt)); err != nil {
-				_ = tmp.Close()
-				_ = os.Remove(tmpPath)
-				return fmt.Errorf("rewrite write EXPIREAT: %w", err)
-			}
-		}
-	}
-
-	if err := tmpW.Flush(); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("rewrite flush: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("rewrite fsync: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("rewrite close temp: %w", err)
-	}
-
-	// 3) Replace live AOF atomically-ish (Windows-safe)
-	// On Windows, renaming over an existing file fails; remove first.
-	_ = a.f.Close()
-
-	_ = os.Remove(a.path) // ignore error if doesn't exist
-	if err := os.Rename(tmpPath, a.path); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("rewrite replace: %w", err)
-	}
-
-	// 4) Reopen for appends
-	f, err := os.OpenFile(a.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return fmt.Errorf("rewrite reopen aof: %w", err)
-	}
-	a.f = f
-	a.w = bufio.NewWriterSize(f, 64*1024)
-
-	return nil
+	return a.InstallRewrite(tmpPath, nil)
 }
 
 func (a *FileAOF) WriteRewriteTemp(snapshot []store.SnapshotEntry) (string, error) {

@@ -67,6 +67,7 @@ func (s *Server) Close() error {
 	if s.stopFsync != nil {
 		s.stopFsync()
 	}
+	_ = s.aof.Sync()
 	_ = s.aof.Close()
 
 	return s.ln.Close()
@@ -256,18 +257,24 @@ func (s *Server) handleConn(conn net.Conn) {
 				break
 			}
 
-			// Apply first (decides if state changes)
-			ok := st.ExpireAt(args[0], ts)
-			if !ok {
+			// Check existence without mutating (Exists purges expired)
+			if !st.Exists(args[0]) {
 				_ = resp.WriteInteger(writer, 0)
 				break
 			}
 
-			// Log after state change (like your EXPIRE flow)
+			// Persist first
 			if err := s.appendAOF("EXPIREAT", []string{args[0], args[1]}); err != nil {
 				_ = resp.WriteError(writer, "ERR aof write failed")
 				_ = writer.Flush()
 				return
+			}
+
+			// Now apply
+			ok := st.ExpireAt(args[0], ts)
+			if !ok {
+				_ = resp.WriteInteger(writer, 0)
+				break
 			}
 
 			_ = resp.WriteInteger(writer, 1)
