@@ -44,7 +44,7 @@ Background rewrite (BGREWRITEAOF)
   1. Takes a point-in-time snapshot of in-memory state.
   2. Rewrites a compact AOF in the background.
   3. Buffers concurrent writes as tail operations.
-  4. Atomically swaps the rewritten file and appends buffered tail operations.
+  4. Atomically swaps the rewritten file and appends buffered tail operations to preserve write ordering.
 - Clients continue to operate normally during the rewrite.
 
 Supported commands (subset)
