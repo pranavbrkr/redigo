@@ -485,10 +485,9 @@ func (s *Server) tryStartRewrite() bool {
 	return true
 }
 
-func (s *Server) finishRewrite() []aof.Entry {
-	s.rewriteMu.Lock()
-	defer s.rewriteMu.Unlock()
-
+// finishRewriteLocked assumes rewriteMu is held.
+// Caller may hold aofMu as well (recommended during install swap).
+func (s *Server) finishRewriteLocked() []aof.Entry {
 	tail := append([]aof.Entry(nil), s.rewriteTail...) // copy
 	s.rewriteRunning = false
 	s.rewriteTail = nil
@@ -504,23 +503,40 @@ func (s *Server) runRewrite(faof *aof.FileAOF) {
 	// 2) Write compact temp AOF (no blocking of live clients/AOF)
 	tmpPath, err := faof.WriteRewriteTemp(snap)
 	if err != nil {
-		_ = s.finishRewrite()
+		// mark rewrite as finished so future rewrites can start
+		s.rewriteMu.Lock()
+		s.rewriteRunning = false
+		s.rewriteTail = nil
+		s.rewriteMu.Unlock()
+
 		log.Printf("[BGREWRITEAOF] failed to write temp: %v", err)
 		return
 	}
 
-	// 3) Capture tail ops that occurred after snapshot
-	tail := s.finishRewrite()
-
-	// 4) Briefly block AOF appends, swap file, append tail
+	// 3) Atomically:
+	//    - stop tail recording
+	//    - capture tail
+	//    - block AOF appends while we swap files + append tail
+	//
+	// Lock order: rewriteMu -> aofMu (matches appendAOF; avoids deadlocks).
+	s.rewriteMu.Lock()
 	s.aofMu.Lock()
+
+	tail := s.finishRewriteLocked()
+
+	// We can release rewriteMu now; appendAOF may proceed to rewriteMu but will block on aofMu.
+	s.rewriteMu.Unlock()
+
 	installErr := faof.InstallRewrite(tmpPath, tail)
+
 	s.aofMu.Unlock()
 
 	if installErr != nil {
-		log.Printf("[BGREWRITEAOF] failed to install rewrite (tmp=%s, tail_ops=%d): %v", tmpPath, len(tail), installErr)
+		log.Printf("[BGREWRITEAOF] failed to install rewrite (tmp=%s, tail_ops=%d): %v",
+			tmpPath, len(tail), installErr)
 		return
 	}
 
-	log.Printf("[BGREWRITEAOF] completed (keys=%d, tail_ops=%d) in %s", len(snap), len(tail), time.Since(start))
+	log.Printf("[BGREWRITEAOF] completed (keys=%d, tail_ops=%d) in %s",
+		len(snap), len(tail), time.Since(start))
 }
