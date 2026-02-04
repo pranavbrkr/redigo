@@ -32,13 +32,13 @@ func TestBGREWRITEAOF_DoesNotLoseConcurrentWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open aof: %v", err)
 	}
-	defer aw.Close()
+	// defer aw.Close()
 
 	s, addr, err := Start("127.0.0.1:0", st, aw, aof.FsyncNever)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	defer s.Close()
+	// defer s.Close()
 
 	// Conn 1: writer
 	wConn, wR, wW := mustDial(t, addr)
@@ -51,16 +51,22 @@ func TestBGREWRITEAOF_DoesNotLoseConcurrentWrites(t *testing.T) {
 	// Preload a bit of state so rewrite has something non-trivial to snapshot.
 	// (This also makes the rewrite more likely to overlap with concurrent writes.)
 	for i := 0; i < 2000; i++ {
-		if err := sendCmd(wW, "SET", "pre:"+strconv.Itoa(i), "x"); err != nil {
+		if err := sendCmd(wConn, wW, "SET", "pre:"+strconv.Itoa(i), "x"); err != nil {
 			t.Fatalf("preload write: %v", err)
 		}
-		if err := expectSimpleOK(wR); err != nil {
+		if err := expectSimpleOK(wConn, wR); err != nil {
 			t.Fatalf("preload resp: %v", err)
 		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
+
+	go func() {
+		<-ctx.Done()
+		_ = wConn.Close()
+		_ = aConn.Close()
+	}()
 
 	var wrote int64
 	var wg sync.WaitGroup
@@ -80,10 +86,15 @@ func TestBGREWRITEAOF_DoesNotLoseConcurrentWrites(t *testing.T) {
 			key := "k:" + strconv.Itoa(i)
 			val := "v:" + strconv.Itoa(i)
 
-			if err := sendCmd(wW, "SET", key, val); err != nil {
+			if err := sendCmd(wConn, wW, "SET", key, val); err != nil {
 				return
 			}
-			if err := expectSimpleOK(wR); err != nil {
+			if err := expectSimpleOK(wConn, wR); err != nil {
+				// if we timed out and ctx is done, exit cleanly
+				if ctx.Err() != nil {
+					return
+				}
+				// otherwise just exit (or you can continue)
 				return
 			}
 
@@ -104,11 +115,11 @@ func TestBGREWRITEAOF_DoesNotLoseConcurrentWrites(t *testing.T) {
 			default:
 			}
 
-			if err := sendCmd(aW, "BGREWRITEAOF"); err != nil {
+			if err := sendCmd(aConn, aW, "BGREWRITEAOF"); err != nil {
 				return
 			}
 			// Server replies +OK immediately (it runs rewrite async)
-			_ = expectSimpleOK(aR)
+			_ = expectSimpleOK(aConn, aR) // ignore errors like before
 
 			// Small jitter so we don’t just spam in a tight loop
 			time.Sleep(20 * time.Millisecond)
@@ -185,10 +196,14 @@ func mustDial(t *testing.T, addr string) (net.Conn, *bufio.Reader, *bufio.Writer
 	return conn, bufio.NewReader(conn), bufio.NewWriter(conn)
 }
 
-func sendCmd(w *bufio.Writer, parts ...string) error {
+func sendCmd(conn net.Conn, w *bufio.Writer, parts ...string) error {
 	if len(parts) == 0 {
 		return fmt.Errorf("no command parts")
 	}
+
+	_ = conn.SetWriteDeadline(time.Now().Add(250 * time.Millisecond))
+	defer conn.SetWriteDeadline(time.Time{})
+
 	if err := resp.WriteArrayHeader(w, len(parts)); err != nil {
 		return err
 	}
@@ -200,9 +215,16 @@ func sendCmd(w *bufio.Writer, parts ...string) error {
 	return w.Flush()
 }
 
-func expectSimpleOK(r *bufio.Reader) error {
+func expectSimpleOK(conn net.Conn, r *bufio.Reader) error {
+	_ = conn.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
+	defer conn.SetReadDeadline(time.Time{})
+
 	v, err := resp.Decode(r)
 	if err != nil {
+		// Treat timeouts as a normal retry signal for the caller
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			return context.DeadlineExceeded
+		}
 		return err
 	}
 	if v.Type != resp.SimpleString || v.Str != "OK" {

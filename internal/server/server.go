@@ -24,10 +24,15 @@ type Server struct {
 	fsyncPolicy aof.FsyncPolicy
 	stopFsync   func()
 	aofMu       sync.Mutex
+
 	// BGREWRITEAOF state
 	rewriteMu      sync.Mutex
 	rewriteRunning bool
 	rewriteTail    []aof.Entry
+
+	// NEW:
+	rewriteWg    sync.WaitGroup
+	shuttingDown bool
 }
 
 func Start(addr string, st *store.Store, aw aof.Writer, fsyncPolicy aof.FsyncPolicy) (*Server, string, error) {
@@ -60,17 +65,36 @@ func (s *Server) Close() error {
 		return nil
 	}
 
+	// Mark shutdown so BGREWRITEAOF can’t start
+	s.rewriteMu.Lock()
+	s.shuttingDown = true
+	s.rewriteMu.Unlock()
+
+	// Stop accepting new conns early
+	_ = s.ln.Close()
+	// s.ln = nil
+
+	// Stop background loops
 	if s.stopReaper != nil {
 		s.stopReaper()
+		s.stopReaper = nil
 	}
-
 	if s.stopFsync != nil {
 		s.stopFsync()
+		s.stopFsync = nil
 	}
+
+	// Wait for BGREWRITEAOF goroutine(s) to finish install phase
+	s.rewriteWg.Wait()
+
+	// Now it’s safe to close AOF (no installRewrite will race)
+	s.aofMu.Lock()
+	defer s.aofMu.Unlock()
+
 	_ = s.aof.Sync()
 	_ = s.aof.Close()
 
-	return s.ln.Close()
+	return nil
 }
 
 func (s *Server) acceptLoop() {
@@ -344,7 +368,12 @@ func (s *Server) handleConn(conn net.Conn) {
 				break
 			}
 
-			go s.runRewrite(faof)
+			s.rewriteWg.Add(1)
+			go func() {
+				defer s.rewriteWg.Done()
+				s.runRewrite(faof)
+			}()
+
 			_ = resp.WriteSimpleString(writer, "OK")
 
 		default:
@@ -477,6 +506,9 @@ func (s *Server) tryStartRewrite() bool {
 	s.rewriteMu.Lock()
 	defer s.rewriteMu.Unlock()
 
+	if s.shuttingDown {
+		return false
+	}
 	if s.rewriteRunning {
 		return false
 	}
