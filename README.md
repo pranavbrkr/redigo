@@ -7,7 +7,7 @@ What this project is
   practical subset of Redis functionality with real-world persistence semantics.
 - Focuses on correctness, durability tradeoffs, and background maintenance
   (TTL reaping, AOF rewrite) rather than feature parity.
-- Designed as a systems learning project that mirrors how production data
+- A systems learning project focused on persistence + crash recovery.
   stores handle persistence, crashes, and compaction.
 
 Major components
@@ -45,7 +45,7 @@ Background rewrite (BGREWRITEAOF)
   2. Rewrites a compact AOF in the background.
   3. Buffers concurrent writes as tail operations.
   4. Atomically swaps the rewritten file and appends buffered tail operations to preserve write ordering.
-- Guarantees no write loss during rewrite, even under concurrent writes.
+- Preserves writes during rewrite under concurrent load (tail buffering + atomic swap).
 - Clients continue to operate normally during the rewrite.
 
 Supported commands (subset)

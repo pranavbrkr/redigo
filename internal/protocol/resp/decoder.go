@@ -99,7 +99,7 @@ func Decode(r *bufio.Reader) (Value, error) {
 		return Value{Type: Array, Array: items}, nil
 
 	default:
-		return Value{}, ProtoError{Msg: fmt.Sprintf("unknown RESP prefixL %q", prefix)}
+		return Value{}, ProtoError{Msg: fmt.Sprintf("unknown RESP prefix %q", prefix)}
 	}
 }
 
