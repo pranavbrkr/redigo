@@ -1,3 +1,4 @@
+// internal/server/server.go
 package server
 
 import (
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pranavbrkr/redigo/internal/aof"
@@ -29,10 +31,15 @@ type Server struct {
 	rewriteMu      sync.Mutex
 	rewriteRunning bool
 	rewriteTail    []aof.Entry
+	rewriteWg      sync.WaitGroup
 
-	// NEW:
-	rewriteWg    sync.WaitGroup
-	shuttingDown bool
+	// shutdown flag (single source of truth)
+	shuttingDown atomic.Bool
+
+	// connection tracking
+	connMu sync.Mutex
+	conns  map[net.Conn]struct{}
+	connWg sync.WaitGroup
 }
 
 func Start(addr string, st *store.Store, aw aof.Writer, fsyncPolicy aof.FsyncPolicy) (*Server, string, error) {
@@ -48,7 +55,15 @@ func Start(addr string, st *store.Store, aw aof.Writer, fsyncPolicy aof.FsyncPol
 	if err != nil {
 		return nil, "", err
 	}
-	s := &Server{ln: ln, store: st, aof: aw, fsyncPolicy: fsyncPolicy}
+
+	s := &Server{
+		ln:          ln,
+		store:       st,
+		aof:         aw,
+		fsyncPolicy: fsyncPolicy,
+		conns:       make(map[net.Conn]struct{}),
+	}
+
 	s.stopReaper = st.StartReaper(500 * time.Millisecond)
 
 	if s.fsyncPolicy == aof.FsyncEverySecond {
@@ -65,16 +80,14 @@ func (s *Server) Close() error {
 		return nil
 	}
 
-	// Mark shutdown so BGREWRITEAOF can’t start
-	s.rewriteMu.Lock()
-	s.shuttingDown = true
-	s.rewriteMu.Unlock()
+	// 1) mark shutdown so accepts/rewrites stop
+	s.shuttingDown.Store(true)
 
-	// Stop accepting new conns early
+	// 2) stop accepting new connections
 	_ = s.ln.Close()
-	// s.ln = nil
+	s.ln = nil
 
-	// Stop background loops
+	// 3) stop background loops
 	if s.stopReaper != nil {
 		s.stopReaper()
 		s.stopReaper = nil
@@ -84,10 +97,20 @@ func (s *Server) Close() error {
 		s.stopFsync = nil
 	}
 
-	// Wait for BGREWRITEAOF goroutine(s) to finish install phase
+	// 4) force-close all active client connections
+	s.connMu.Lock()
+	for c := range s.conns {
+		_ = c.Close()
+	}
+	s.connMu.Unlock()
+
+	// 5) wait for all client handlers to exit
+	s.connWg.Wait()
+
+	// 6) wait for any BGREWRITEAOF installs to finish
 	s.rewriteWg.Wait()
 
-	// Now it’s safe to close AOF (no installRewrite will race)
+	// 7) safely close AOF (no installRewrite can race now)
 	s.aofMu.Lock()
 	defer s.aofMu.Unlock()
 
@@ -103,6 +126,24 @@ func (s *Server) acceptLoop() {
 		if err != nil {
 			return
 		}
+
+		// If shutting down, reject this conn and keep looping until listener closes.
+		if s.shuttingDown.Load() {
+			_ = conn.Close()
+			continue
+		}
+
+		s.connMu.Lock()
+		// Re-check under lock to avoid racing with Close() that’s about to close all conns.
+		if s.shuttingDown.Load() {
+			s.connMu.Unlock()
+			_ = conn.Close()
+			continue
+		}
+		s.conns[conn] = struct{}{}
+		s.connWg.Add(1)
+		s.connMu.Unlock()
+
 		go s.handleConn(conn)
 	}
 }
@@ -110,7 +151,15 @@ func (s *Server) acceptLoop() {
 func (s *Server) handleConn(conn net.Conn) {
 	st := s.store
 
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+
+		s.connMu.Lock()
+		delete(s.conns, conn)
+		s.connMu.Unlock()
+
+		s.connWg.Done()
+	}()
 
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
@@ -243,7 +292,6 @@ func (s *Server) handleConn(conn net.Conn) {
 				break
 			}
 
-			// If key doesn't exist / is expired, ExpireAt will return false.
 			unix := time.Now().Add(time.Duration(seconds) * time.Second).Unix()
 
 			// Check existence without mutating (Exists purges expired)
@@ -259,14 +307,11 @@ func (s *Server) handleConn(conn net.Conn) {
 				return
 			}
 
-			// Now apply
 			ok := st.ExpireAt(args[0], unix)
 			if !ok {
-				// extremely rare race (expired between Exists and ExpireAt)
 				_ = resp.WriteInteger(writer, 0)
 				break
 			}
-
 			_ = resp.WriteInteger(writer, 1)
 
 		case "EXPIREAT":
@@ -281,26 +326,22 @@ func (s *Server) handleConn(conn net.Conn) {
 				break
 			}
 
-			// Check existence without mutating (Exists purges expired)
 			if !st.Exists(args[0]) {
 				_ = resp.WriteInteger(writer, 0)
 				break
 			}
 
-			// Persist first
 			if err := s.appendAOF("EXPIREAT", []string{args[0], args[1]}); err != nil {
 				_ = resp.WriteError(writer, "ERR aof write failed")
 				_ = writer.Flush()
 				return
 			}
 
-			// Now apply
 			ok := st.ExpireAt(args[0], ts)
 			if !ok {
 				_ = resp.WriteInteger(writer, 0)
 				break
 			}
-
 			_ = resp.WriteInteger(writer, 1)
 
 		case "TTL":
@@ -313,7 +354,6 @@ func (s *Server) handleConn(conn net.Conn) {
 
 		case "COMMAND":
 			if len(args) == 0 {
-				// List supported commands
 				_ = resp.WriteArrayHeader(writer, 11)
 
 				writeCommandDoc(writer, "PING", -1, []string{"fast"})
@@ -327,7 +367,6 @@ func (s *Server) handleConn(conn net.Conn) {
 				writeCommandDoc(writer, "INFO", -1, []string{"readonly"})
 				writeCommandDoc(writer, "EXPIREAT", 3, []string{"write", "fast"})
 				writeCommandDoc(writer, "BGREWRITEAOF", 1, []string{"admin", "write"})
-
 				break
 			}
 
@@ -402,7 +441,6 @@ func decodeCommandParts(v resp.Value) (string, []string, bool) {
 	cmd := strings.ToUpper(parts[0])
 	args := parts[1:]
 	return cmd, args, true
-
 }
 
 func isConnReset(err error) bool {
@@ -439,27 +477,23 @@ func (s *Server) appendAOF(cmd string, args []string) error {
 		return nil
 	}
 
-	// If rewrite is running, capture tail BEFORE we allow finishRewrite() to drain it.
-	// Lock order: rewriteMu -> aofMu (consistent, avoids deadlocks).
+	// Lock order: rewriteMu -> aofMu (consistent; avoids deadlocks).
 	s.rewriteMu.Lock()
 	defer s.rewriteMu.Unlock()
 
 	s.aofMu.Lock()
 	defer s.aofMu.Unlock()
 
-	// Append to AOF
 	if err := s.aof.Append(cmd, args); err != nil {
 		return err
 	}
 
-	// If policy is always, force durability right now
 	if s.fsyncPolicy == aof.FsyncAlways {
 		if err := s.aof.Sync(); err != nil {
 			return err
 		}
 	}
 
-	// Record tail op if rewrite active (safe: rewriteMu held)
 	if s.rewriteRunning {
 		cp := make([]string, len(args))
 		copy(cp, args)
@@ -490,8 +524,6 @@ func writeAOFError(w *bufio.Writer, msg string) {
 }
 
 func writeCommandDoc(w *bufio.Writer, name string, arity int64, flags []string) {
-	// Format loosely matches Redis COMMAND output:
-	// [name, arity, [flags...]]
 	_ = resp.WriteArrayHeader(w, 3)
 	_ = resp.WriteBulkString(w, []byte(strings.ToLower(name)))
 	_ = resp.WriteInteger(w, arity)
@@ -506,12 +538,13 @@ func (s *Server) tryStartRewrite() bool {
 	s.rewriteMu.Lock()
 	defer s.rewriteMu.Unlock()
 
-	if s.shuttingDown {
+	if s.shuttingDown.Load() {
 		return false
 	}
 	if s.rewriteRunning {
 		return false
 	}
+
 	s.rewriteRunning = true
 	s.rewriteTail = s.rewriteTail[:0]
 	return true
@@ -529,13 +562,12 @@ func (s *Server) finishRewriteLocked() []aof.Entry {
 func (s *Server) runRewrite(faof *aof.FileAOF) {
 	start := time.Now()
 
-	// 1) Snapshot fast (brief store lock)
+	// 1) snapshot fast (brief store lock)
 	snap := s.store.Snapshot()
 
-	// 2) Write compact temp AOF (no blocking of live clients/AOF)
+	// 2) write compact temp AOF
 	tmpPath, err := faof.WriteRewriteTemp(snap)
 	if err != nil {
-		// mark rewrite as finished so future rewrites can start
 		s.rewriteMu.Lock()
 		s.rewriteRunning = false
 		s.rewriteTail = nil
@@ -545,18 +577,12 @@ func (s *Server) runRewrite(faof *aof.FileAOF) {
 		return
 	}
 
-	// 3) Atomically:
-	//    - stop tail recording
-	//    - capture tail
-	//    - block AOF appends while we swap files + append tail
-	//
+	// 3) atomically capture tail and swap under locks
 	// Lock order: rewriteMu -> aofMu (matches appendAOF; avoids deadlocks).
 	s.rewriteMu.Lock()
 	s.aofMu.Lock()
 
 	tail := s.finishRewriteLocked()
-
-	// We can release rewriteMu now; appendAOF may proceed to rewriteMu but will block on aofMu.
 	s.rewriteMu.Unlock()
 
 	installErr := faof.InstallRewrite(tmpPath, tail)
