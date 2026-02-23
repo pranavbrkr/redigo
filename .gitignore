@@ -15,3 +15,5 @@ bin/
 # Logs / runtime files
 *.log
 data/
+
+INTERVIEW.md
