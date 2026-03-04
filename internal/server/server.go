@@ -382,11 +382,23 @@ func (s *Server) handleConn(conn net.Conn) {
 				writeWrongArgs(writer, "INFO")
 				break
 			}
+
+			port := ""
+			if s.ln != nil {
+				if a, ok := s.ln.Addr().(*net.TCPAddr); ok {
+					port = strconv.Itoa(a.Port)
+				}
+			}
+
+			if port == "" {
+				port = "6379"
+			}
+
 			info := []byte(
 				"# Server\r\n" +
 					"redis_version:0.0.1\r\n" +
 					"redigo:1\r\n" +
-					"tcp_port:6379\r\n",
+					"tcp_port:" + port + "\r\n",
 			)
 			_ = resp.WriteBulkString(writer, info)
 

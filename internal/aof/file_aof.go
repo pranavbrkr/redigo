@@ -52,7 +52,9 @@ func (a *FileAOF) Append(cmd string, args []string) error {
 	}
 
 	// Encode as RESP Array of Bulk strings: [CMD, arg1, arg2, ...]
-	_ = resp.WriteArrayHeader(a.w, 1+len(args))
+	if err := resp.WriteArrayHeader(a.w, 1+len(args)); err != nil {
+		return err
+	}
 	if err := resp.WriteBulkString(a.w, []byte(cmd)); err != nil {
 		return err
 	}

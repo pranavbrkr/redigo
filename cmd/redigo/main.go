@@ -18,7 +18,7 @@ import (
 func main() {
 	port := flag.Int("port", 6379, "TCP port to listen on")
 	aofEnabled := flag.Bool("aof-enabled", false, "Enable append-only file persistence")
-	aofPath := flag.String("aof-path", "appendonly.aof", "Path to AOF file")
+	aofPath := flag.String("aof-path", "data/appendonly.aof", "Path to AOF file")
 	aofFsync := flag.String("aof-fsync", "everysec", "AOF fsync policy: always|everysec|never")
 
 	flag.Parse()

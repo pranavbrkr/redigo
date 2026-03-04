@@ -66,10 +66,19 @@ func Decode(r *bufio.Reader) (Value, error) {
 			return Value{}, err
 		}
 
-		// consume trailing \r\n
-		if _, err := r.ReadString('\n'); err != nil {
+		// consume and validate trailing \r\n
+		b1, err := r.ReadByte()
+		if err != nil {
 			return Value{}, err
 		}
+		b2, err := r.ReadByte()
+		if err != nil {
+			return Value{}, err
+		}
+		if b1 != '\r' || b2 != '\n' {
+			return Value{}, ProtoError{Msg: "invalid bulk string terminator"}
+		}
+
 		return Value{Type: BulkString, Bulk: buf}, nil
 
 	// Array

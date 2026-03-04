@@ -151,11 +151,13 @@ func (s *Store) TTL(key string) int64 {
 	}
 
 	remaining := e.expiresAt.Sub(now)
-	sec := int64(remaining / time.Second)
-	if sec < 0 {
+	if remaining <= 0 {
 		delete(s.data, key)
 		return -2
 	}
+
+	// ceil to seconds
+	sec := int64((remaining + time.Second - 1) / time.Second)
 	return sec
 }
 
