@@ -7,15 +7,15 @@ What this project is
   practical subset of Redis functionality with real-world persistence semantics.
 - Focuses on correctness, durability tradeoffs, and background maintenance
   (TTL reaping, AOF rewrite) rather than feature parity.
-- A systems learning project focused on persistence + crash recovery.
-  stores handle persistence, crashes, and compaction.
+- A systems learning project focused on persistence + crash recovery;
+  the store handles persistence, crashes, and compaction.
 
 Major components
 - `cmd/redigo` — server entrypoint and flags; run the server here.
 - `cmd/redigo-cli` — small companion CLI for interactive use and scripting.
-- `protocol/resp` — RESP2 encoder/decoder and protocol types.
-- `server` — command registration, request lifecycle, and network handling.
-- `store` — in-memory key/value storage, TTL bookkeeping, and reaper.
+- `internal/protocol/resp` — RESP2 encoder/decoder and protocol types.
+- `internal/server` — command registration, request lifecycle, and network handling.
+- `internal/store` — in-memory key/value storage, TTL bookkeeping, and reaper.
 - `internal/aof` — append-only file persistence and replay implementation.
 
 Persistence & durability model
@@ -72,8 +72,10 @@ Dependencies & requirements
 - No external services required; runs locally on supported OSes including Windows.
 
 Quick start — run the server
-PowerShell (Windows):
-```powershell
+
+From your shell (bash, zsh, PowerShell, etc.):
+
+```bash
 # run in-place (development)
 go run ./cmd/redigo
 
@@ -81,36 +83,37 @@ go run ./cmd/redigo
 go run ./cmd/redigo -aof-enabled=true -aof-path data/appendonly.aof
 ```
 
-Shell (Linux / macOS):
-```bash
-go run ./cmd/redigo
-go run ./cmd/redigo -aof-enabled=true -aof-path data/appendonly.aof
-```
-
 Build the binaries
-```powershell
+
+```bash
 go build -o bin/redigo ./cmd/redigo
 go build -o bin/redigo-cli ./cmd/redigo-cli
+```
+
+Run tests
+
+```bash
+go test ./...
 ```
 
 How to run the server
 
 - Build a binary (optional):
-  ```powershell
+  ```bash
   go build -o bin/redigo ./cmd/redigo
   ```
 
-- Run the built binary:
-  ```powershell
+- Run the built binary (use `./bin/redigo` on Unix/macOS, `.\bin\redigo` on Windows):
+  ```bash
   # default (no AOF)
-  .\bin\redigo
+  ./bin/redigo
 
   # enable AOF persistence
-  .\bin\redigo -aof-enabled=true -aof-path data/appendonly.aof
+  ./bin/redigo -aof-enabled=true -aof-path data/appendonly.aof
   ```
 
 - Or run in-place (development):
-  ```powershell
+  ```bash
   go run ./cmd/redigo
   go run ./cmd/redigo -aof-enabled=true -aof-path data/appendonly.aof
   ```
@@ -124,15 +127,15 @@ How to interact with the server
 
 - Using the bundled client (`redigo-cli`):
   1. Build the CLI:
-     ```powershell
+     ```bash
      go build -o bin/redigo-cli ./cmd/redigo-cli
      ```
-  2. Use it to send single commands:
-     ```powershell
-     .\bin\redigo-cli set mykey "hello"
-     .\bin\redigo-cli get mykey
-     .\bin\redigo-cli expire mykey 30
-     .\bin\redigo-cli ttl mykey
+  2. Use it to send single commands (use `./bin/redigo-cli` on Unix/macOS, `.\bin\redigo-cli` on Windows):
+     ```bash
+     ./bin/redigo-cli set mykey "hello"
+     ./bin/redigo-cli get mykey
+     ./bin/redigo-cli expire mykey 30
+     ./bin/redigo-cli ttl mykey
      ```
   3. `redigo-cli` supports interactive and scripting modes — check `cmd/redigo-cli/main.go` for usage details.
 
@@ -141,7 +144,8 @@ How to interact with the server
   - `memurai-cli` (on Windows) and other RESP2-compatible tools also work.
 
 Notes
-- AOF default path: `data/appendonly.aof` (repo root).
+- AOF default path: `data/appendonly.aof` (created under repo root if needed).
 - This project is intentionally minimal and focuses on a small set of commands and clear implementation rather than full Redis feature parity.
+- Feature-complete for its scope: AOF persistence, fsync policies, BGREWRITEAOF, TTL/reaper, crash-safe replay, and the documented command set are implemented and tested.
 
 Enjoy!
