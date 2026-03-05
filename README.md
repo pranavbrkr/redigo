@@ -96,6 +96,8 @@ Run tests
 go test ./...
 ```
 
+Tests cover the RESP protocol (encoder/decoder), server commands and error paths (INFO, COMMAND, wrong args, BGREWRITEAOF errors), store (snapshot, Del, Exists), and AOF (replay, fsync policy, Noop, closed writer).
+
 How to run the server
 
 - Build a binary (optional):
